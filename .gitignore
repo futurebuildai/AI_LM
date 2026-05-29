@@ -1,0 +1,40 @@
+# Environment files
+**/.env
+**/.env.*
+!**/.env.example
+
+# Local docker compose override (developer-specific tweaks)
+docker-compose.override.yml
+
+# Build artifacts
+backend/server
+backend/server_bin
+backend/migrate
+backend/seed
+*.log
+
+# Agent/AI directories
+.agent/
+.agents/
+.claude/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+dist-ssr/
+
+# Digital Ocean — keep .do/*.yaml tracked, ignore local-only manifests
+.do/*.local.*
+.do/.env*
+
+# OS
+.DS_Store
+Thumbs.db

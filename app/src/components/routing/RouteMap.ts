@@ -1,0 +1,107 @@
+import { LitElement, html } from 'lit';
+import { customElement, property } from 'lit/decorators.js';
+import * as L from 'leaflet';
+import type { RouteStop, ComplianceFlag } from '../../services/aiLmService.ts';
+
+/**
+ * <ailm-route-map> — Leaflet map of an optimized route: ordered numbered stops
+ * connected by a polyline, with restricted-point flags overlaid. Re-fits bounds
+ * whenever stops/flags change.
+ */
+@customElement('ailm-route-map')
+export class RouteMap extends LitElement {
+  createRenderRoot() { return this; }
+
+  @property({ attribute: false }) stops: RouteStop[] = [];
+  @property({ attribute: false }) flags: ComplianceFlag[] = [];
+
+  private _map?: L.Map;
+  private _layer?: L.LayerGroup;
+
+  firstUpdated() {
+    this._initMap();
+    this._draw();
+  }
+
+  updated(changed: Map<string, unknown>) {
+    if ((changed.has('stops') || changed.has('flags')) && this._map) {
+      this._draw();
+    }
+  }
+
+  disconnectedCallback() {
+    super.disconnectedCallback();
+    this._map?.remove();
+  }
+
+  private _initMap() {
+    const host = this.querySelector('#map-host') as HTMLElement | null;
+    if (!host) return;
+    this._map = L.map(host, { zoomControl: true, attributionControl: false }).setView([49.88, -119.49], 11);
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+      maxZoom: 19,
+    }).addTo(this._map);
+    this._layer = L.layerGroup().addTo(this._map);
+  }
+
+  private _stopIcon(seq: number, status: 'ok' | 'warn' | 'fail') {
+    const color = status === 'fail' ? '#F43F5E' : status === 'warn' ? '#FBBF24' : '#00FFA3';
+    return L.divIcon({
+      className: 'ailm-stop-marker',
+      html: `<div style="background:${color};color:#0A0B10;width:26px;height:26px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-family:'JetBrains Mono',monospace;font-weight:700;font-size:12px;box-shadow:0 0 10px ${color}80;border:2px solid #0A0B10">${seq}</div>`,
+      iconSize: [26, 26],
+      iconAnchor: [13, 13],
+    });
+  }
+
+  private _flagIcon(severity: 'WARN' | 'FAIL') {
+    const color = severity === 'FAIL' ? '#F43F5E' : '#FBBF24';
+    return L.divIcon({
+      className: 'ailm-flag-marker',
+      html: `<div style="width:0;height:0;border-left:8px solid transparent;border-right:8px solid transparent;border-bottom:16px solid ${color};filter:drop-shadow(0 0 6px ${color})"></div>`,
+      iconSize: [16, 16],
+      iconAnchor: [8, 16],
+    });
+  }
+
+  private _draw() {
+    if (!this._map || !this._layer) return;
+    this._layer.clearLayers();
+
+    const latlngs: L.LatLngExpression[] = [];
+    for (const s of this.stops) {
+      latlngs.push([s.lat, s.lng]);
+    }
+
+    if (latlngs.length > 1) {
+      L.polyline(latlngs, { color: '#00FFA3', weight: 3, opacity: 0.7, dashArray: '6 6' }).addTo(this._layer);
+    }
+
+    this.stops.forEach((s) => {
+      L.marker([s.lat, s.lng], { icon: this._stopIcon(s.sequence, 'ok') })
+        .bindPopup(
+          `<b>Stop ${s.sequence}</b><br/>${s.address || s.order_id}<br/>${s.weight_lbs.toLocaleString()} lbs`,
+        )
+        .addTo(this._layer!);
+    });
+
+    this.flags.forEach((f) => {
+      L.marker([f.point.lat, f.point.lng], { icon: this._flagIcon(f.severity) })
+        .bindPopup(`<b>${f.point.name}</b><br/>${f.violation}<br/><i>${f.severity}</i>`)
+        .addTo(this._layer!);
+    });
+
+    const all = [...latlngs, ...this.flags.map((f) => [f.point.lat, f.point.lng] as L.LatLngExpression)];
+    if (all.length > 0) {
+      this._map.fitBounds(L.latLngBounds(all).pad(0.2));
+    }
+  }
+
+  render() {
+    return html`
+      <div class="relative w-full h-[480px] rounded-xl overflow-hidden border border-white/5">
+        <div id="map-host" class="absolute inset-0"></div>
+      </div>
+    `;
+  }
+}

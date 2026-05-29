@@ -1,0 +1,115 @@
+# Digital Ocean App Platform spec — AI_LM DEMO environment.
+#
+# Tracks the `community` branch of github.com/futurebuildai/AI_LM and
+# auto-deploys to https://demo.ai-lm.gable.com on push. Backed by a DO
+# Managed Postgres cluster (`ai-lm-pg`), logical DB `ai_lm_demo`.
+#
+# AI_LM is a supplementary microservice: it pulls orders/products/vehicles
+# from GableLBM via /api/integration/* using GABLE_INTEGRATION_KEY and writes
+# approved routes back the same way. AUTH_MODE=dev is acceptable on the
+# community demo (demo data is non-confidential); set JWKS_URL + leave
+# AUTH_MODE unset for a real auth path. INSTANCE_COUNT must remain 1.
+#
+# Apply with: doctl apps create --spec .do/app-demo.yaml  (first time)
+#             doctl apps update <app-id> --spec .do/app-demo.yaml
+name: ai-lm-demo
+region: nyc
+alerts:
+  - rule: DEPLOYMENT_FAILED
+  - rule: DOMAIN_FAILED
+
+domains:
+  - domain: demo.ai-lm.gable.com
+    type: PRIMARY
+
+services:
+  - name: backend
+    dockerfile_path: backend/Dockerfile
+    source_dir: /
+    github:
+      repo: futurebuildai/AI_LM
+      branch: community
+      deploy_on_push: true
+    instance_count: 1
+    instance_size_slug: basic-xxs
+    http_port: 8090
+    health_check:
+      http_path: /healthz/live
+      initial_delay_seconds: 15
+      period_seconds: 30
+      failure_threshold: 3
+    routes:
+      # preserve_path_prefix keeps the original path when proxying to the
+      # container; without it App Platform strips the matched prefix and the
+      # Go router 404s (e.g. /healthz/live → /live).
+      - path: /api
+        preserve_path_prefix: true
+      - path: /healthz
+        preserve_path_prefix: true
+      - path: /metrics
+        preserve_path_prefix: true
+    envs:
+      - key: PORT
+        value: "8090"
+      - key: AUTH_MODE
+        value: dev
+      - key: CORS_ORIGINS
+        value: https://demo.ai-lm.gable.com
+      - key: GABLE_API_URL
+        scope: RUN_TIME
+        type: SECRET
+      - key: GABLE_INTEGRATION_KEY
+        scope: RUN_TIME
+        type: SECRET
+      - key: DATABASE_URL
+        value: ${ai-lm-pg.DATABASE_URL}
+        scope: RUN_AND_BUILD_TIME
+        type: SECRET
+
+  - name: frontend
+    dockerfile_path: app/Dockerfile
+    source_dir: /
+    github:
+      repo: futurebuildai/AI_LM
+      branch: community
+      deploy_on_push: true
+    instance_count: 1
+    instance_size_slug: basic-xxs
+    http_port: 8080
+    build_command: ""
+    envs:
+      # The Lit app calls relative /api/v1 paths; nginx reverse-proxies /api
+      # to the backend's private URL (CSP keeps everything same-origin).
+      - key: BACKEND_URL
+        value: ${backend.PRIVATE_URL}
+        scope: RUN_TIME
+    routes:
+      - path: /
+
+jobs:
+  - name: migrate-and-seed
+    kind: POST_DEPLOY
+    dockerfile_path: backend/Dockerfile
+    source_dir: /
+    github:
+      repo: futurebuildai/AI_LM
+      branch: community
+    instance_count: 1
+    instance_size_slug: basic-xxs
+    # sh -c is required so ./seed runs after ./migrate — App Platform splits
+    # run_command on whitespace and passes argv to the first binary directly.
+    run_command: sh -c "./migrate && ./seed"
+    envs:
+      - key: DATABASE_URL
+        value: ${ai-lm-pg.DATABASE_URL}
+        scope: RUN_TIME
+        type: SECRET
+
+databases:
+  - name: ai-lm-pg
+    engine: PG
+    version: "16"
+    production: true
+    cluster_name: ai-lm-pg
+    db_name: ai_lm_demo
+    db_user: ai_lm_user
