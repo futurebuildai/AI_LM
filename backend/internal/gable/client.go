@@ -92,26 +92,23 @@ type DeliveryRoute struct {
 
 // --- Methods ---
 
-// ListVehicles returns the GableLBM fleet.
+// ListVehicles returns the GableLBM fleet. GableLBM's integration endpoints
+// return bare JSON arrays (not an enveloped object).
 func (c *Client) ListVehicles(ctx context.Context) ([]Vehicle, error) {
-	var out struct {
-		Vehicles []Vehicle `json:"vehicles"`
-	}
+	var out []Vehicle
 	if err := c.do(ctx, http.MethodGet, "/api/integration/vehicles", nil, &out); err != nil {
 		return nil, err
 	}
-	return out.Vehicles, nil
+	return out, nil
 }
 
 // GetProductsWithWeight returns the catalog with per-unit weights.
 func (c *Client) GetProductsWithWeight(ctx context.Context) ([]Product, error) {
-	var out struct {
-		Products []Product `json:"products"`
-	}
+	var out []Product
 	if err := c.do(ctx, http.MethodGet, "/api/integration/products", nil, &out); err != nil {
 		return nil, err
 	}
-	return out.Products, nil
+	return out, nil
 }
 
 // ListOrdersForDate returns confirmed orders for a scheduled date (YYYY-MM-DD).
@@ -119,13 +116,11 @@ func (c *Client) ListOrdersForDate(ctx context.Context, date string) ([]Order, e
 	q := url.Values{}
 	q.Set("date", date)
 	q.Set("status", "CONFIRMED")
-	var out struct {
-		Orders []Order `json:"orders"`
-	}
+	var out []Order
 	if err := c.do(ctx, http.MethodGet, "/api/integration/orders?"+q.Encode(), nil, &out); err != nil {
 		return nil, err
 	}
-	return out.Orders, nil
+	return out, nil
 }
 
 // PushDeliveryRoute writes an approved route back to GableLBM. Idempotent
