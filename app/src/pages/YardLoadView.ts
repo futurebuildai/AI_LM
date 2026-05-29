@@ -7,6 +7,7 @@ import {
   type VehicleProfile,
   type LoadItem,
   type LoadPlan,
+  type EffectiveProduct,
 } from '../services/aiLmService.ts';
 import '../components/load/Load3DVisualizer.ts';
 import type { BedDims } from '../components/load/Load3DVisualizer.ts';
@@ -30,10 +31,28 @@ export class YardLoadView extends LitElement {
   @state() private _plan: LoadPlan | null = null;
   @state() private _loading = false;
   @state() private _error = '';
+  @state() private _products: EffectiveProduct[] = [];
 
   connectedCallback() {
     super.connectedCallback();
     this._loadProfiles();
+    this._loadProducts();
+  }
+
+  // Pulls the resolved catalog (PIM geometry merged with AI_LM overrides) so the
+  // user can build a load from real products. The demo items remain as a dev
+  // fallback when the catalog is empty or the PIM is unreachable.
+  private async _loadProducts() {
+    try {
+      this._products = await aiLmService.listProducts();
+    } catch (err) {
+      // Non-fatal: the manual item editor + demo items still work offline.
+      console.warn('Failed to load catalog products:', err);
+    }
+  }
+
+  private get _missingGeometryCount(): number {
+    return this._products.filter((p) => !p.has_geometry).length;
   }
 
   private async _loadProfiles() {
@@ -84,6 +103,26 @@ export class YardLoadView extends LitElement {
     this._items = [
       ...this._items,
       { product_id: `item-${this._items.length + 1}`, sku: 'NEW-SKU', quantity: 1, length_in: 48, width_in: 24, height_in: 12, weight_lbs: 25, stackable: true },
+    ];
+  }
+
+  // Adds a real catalog product as a load item, carrying its resolved geometry
+  // (PIM-canonical or overridden) so it renders as a scaled digital twin.
+  private _addProductById(productId: string) {
+    const p = this._products.find((x) => x.gable_product_id === productId);
+    if (!p) return;
+    this._items = [
+      ...this._items,
+      {
+        product_id: p.gable_product_id,
+        sku: p.sku,
+        quantity: 1,
+        length_in: p.length_in,
+        width_in: p.width_in,
+        height_in: p.height_in,
+        weight_lbs: p.weight_lbs,
+        stackable: p.stackable,
+      },
     ];
   }
 
@@ -192,12 +231,37 @@ export class YardLoadView extends LitElement {
         </div>
 
         <div class="glass-card rounded-xl p-4">
-          <div class="flex items-center justify-between mb-3">
+          <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
             <h2 class="text-sm font-semibold text-zinc-300">Load Items</h2>
-            <button @click=${this._addItem} class="flex items-center gap-1.5 text-xs text-gable-green hover:underline">
-              ${icon(Plus, 14)} Add item
-            </button>
+            <div class="flex items-center gap-3">
+              ${this._products.length > 0
+                ? html`<select
+                    @change=${(e: Event) => {
+                      const sel = e.target as HTMLSelectElement;
+                      this._addProductById(sel.value);
+                      sel.value = '';
+                    }}
+                    class="bg-deep-space border border-white/10 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:ring-1 focus:ring-gable-green/50 min-w-[220px]"
+                  >
+                    <option value="">Add a product…</option>
+                    ${this._products.map(
+                      (p) => html`<option value=${p.gable_product_id}>
+                        ${p.has_geometry ? '' : '⚠ '}${p.sku} — ${p.name}
+                      </option>`,
+                    )}
+                  </select>`
+                : nothing}
+              <button @click=${this._addItem} class="flex items-center gap-1.5 text-xs text-gable-green hover:underline">
+                ${icon(Plus, 14)} Add blank
+              </button>
+            </div>
           </div>
+          ${this._missingGeometryCount > 0
+            ? html`<div class="flex items-center gap-2 mb-3 px-3 py-2 rounded-lg border border-amber-warn/30 bg-amber-warn/10 text-amber-warn text-xs">
+                ${icon(AlertTriangle, 14)}
+                ${this._missingGeometryCount} catalog product(s) have no PIM geometry yet — set dimensions in GableLBM to load them as scaled twins.
+              </div>`
+            : nothing}
           <div class="overflow-x-auto">
             <table class="w-full text-sm">
               <thead>

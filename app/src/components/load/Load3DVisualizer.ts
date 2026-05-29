@@ -33,6 +33,10 @@ export class Load3DVisualizer extends LitElement {
   private _controls?: OrbitControls;
   private _frame = 0;
   private _resizeObserver?: ResizeObserver;
+  // Shared digital-twin scaling contract: 1 inch = 1/12 Three.js world unit.
+  // GableLBM's PIM preview (<gable-product-twin-3d>) uses the identical factor so
+  // a product renders at matching world-unit size in both the PIM and here next
+  // to the truck bed. Do not change one without the other.
   private readonly _scale = 1 / 12; // inches → feet
 
   firstUpdated() {

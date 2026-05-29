@@ -113,8 +113,8 @@ func main() {
 	fleetSvc := fleet.NewService(fleet.NewRepository(db))
 	fleet.NewHandler(fleetSvc).RegisterRoutes(mux, writeGuard)
 
-	// Catalog (product dimensions).
-	catalogSvc := catalog.NewService(catalog.NewRepository(db))
+	// Catalog (product dimensions + PIM-merged effective geometry).
+	catalogSvc := catalog.NewService(catalog.NewRepository(db), gableClient)
 	catalog.NewHandler(catalogSvc).RegisterRoutes(mux, writeGuard)
 
 	// Load optimization (pillar 1).

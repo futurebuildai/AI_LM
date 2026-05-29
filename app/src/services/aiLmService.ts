@@ -75,6 +75,24 @@ export interface ProductDimension {
   updated_at: string;
 }
 
+// EffectiveProduct is the resolved load-planning view of a product: GableLBM
+// PIM geometry merged with AI_LM overrides. geometry_source records the winning
+// provider (OVERRIDE/PIM/FALLBACK) and has_geometry is false when no usable
+// L/W/H exists so the Load Builder can flag the item.
+export interface EffectiveProduct {
+  gable_product_id: string;
+  sku: string;
+  name: string;
+  category?: string;
+  length_in: number;
+  width_in: number;
+  height_in: number;
+  stackable: boolean;
+  weight_lbs: number;
+  geometry_source: 'OVERRIDE' | 'PIM' | 'FALLBACK';
+  has_geometry: boolean;
+}
+
 // ---- load --------------------------------------------------------------
 export interface LoadItem {
   product_id: string;
@@ -228,6 +246,9 @@ class AiLmService {
   // catalog
   listDimensions(): Promise<ProductDimension[]> {
     return fetchWithAuth(`${BASE}/catalog/dimensions`).then((r) => jsonOrThrow(r));
+  }
+  listProducts(): Promise<EffectiveProduct[]> {
+    return fetchWithAuth(`${BASE}/catalog/products`).then((r) => jsonOrThrow(r));
   }
 
   // load
