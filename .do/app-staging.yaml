@@ -101,6 +101,10 @@ jobs:
     # run_command on whitespace and passes argv to the first binary directly.
     run_command: sh -c "./migrate && ./seed"
     envs:
+      # migrate/seed load the same config as the server; AUTH_MODE=dev avoids
+      # the fail-closed JWKS_URL requirement (the job never serves auth'd HTTP).
+      - key: AUTH_MODE
+        value: dev
       - key: DATABASE_URL
         value: ${ai-lm-pg-staging.DATABASE_URL}
         scope: RUN_TIME
