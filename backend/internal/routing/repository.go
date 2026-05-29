@@ -71,6 +71,12 @@ func (r *Repository) Get(ctx context.Context, id string) (*Plan, error) {
 	if err := json.Unmarshal(loads, &p.Loads); err != nil {
 		return nil, fmt.Errorf("unmarshal loads: %w", err)
 	}
+	// UnassignedStops is computed in-memory during Plan() and not persisted, so
+	// it is nil on read. Normalize to an empty slice so the API serializes it as
+	// [] rather than null (which crashes clients that read .length).
+	if p.UnassignedStops == nil {
+		p.UnassignedStops = []Stop{}
+	}
 	return &p, nil
 }
 

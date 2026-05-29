@@ -157,7 +157,7 @@ export class DispatchBoard extends LitElement {
                 : html`<p class="text-sm text-zinc-500">No plan yet. Pick a date and build a route.</p>`}
             </div>
 
-            ${plan && plan.unassigned_stops.length > 0
+            ${plan && (plan.unassigned_stops?.length ?? 0) > 0
               ? html`
                   <div class="flex items-start gap-2 px-4 py-2.5 rounded-lg border border-amber-warn/30 bg-amber-warn/10 text-amber-warn text-sm">
                     ${icon(AlertTriangle, 18)}
