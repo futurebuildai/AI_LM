@@ -139,11 +139,23 @@ export interface RouteStop {
   weight_lbs: number;
 }
 
+export interface Load {
+  vehicle_id: string;
+  vehicle_name: string;
+  capacity_weight_lbs: number;
+  stops: RouteStop[];
+  total_weight_lbs: number;
+  total_distance_mi: number;
+  total_duration_min: number;
+}
+
 export interface RoutePlan {
   id: string;
   plan_date: string;
   gable_branch_id?: string;
   gable_vehicle_id?: string;
+  loads: Load[];
+  unassigned_stops: RouteStop[];
   stops: RouteStop[];
   total_distance_mi: number;
   total_duration_min: number;

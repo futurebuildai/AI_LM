@@ -16,12 +16,29 @@ type Stop struct {
 	WeightLbs float64 `json:"weight_lbs"`
 }
 
-// Plan is a cached, ordered route plan for a date.
+// Load is a single truck's assignment: its vehicle, capacity, sequenced stops
+// and the per-load totals. One Load becomes one delivery_route on write-back.
+type Load struct {
+	VehicleID         string  `json:"vehicle_id"`
+	VehicleName       string  `json:"vehicle_name"`
+	CapacityWeightLbs int     `json:"capacity_weight_lbs"`
+	Stops             []Stop  `json:"stops"`
+	TotalWeightLbs    float64 `json:"total_weight_lbs"`
+	TotalDistanceMi   float64 `json:"total_distance_mi"`
+	TotalDurationMin  float64 `json:"total_duration_min"`
+}
+
+// Plan is a cached, capacitated route plan for a date. Loads holds the per-truck
+// assignments; Stops/Total* are the flattened union/sums across loads (kept for
+// back-compat with the 3D/summary code). UnassignedStops are stops that did not
+// fit any available vehicle.
 type Plan struct {
 	ID               string    `json:"id"`
 	PlanDate         string    `json:"plan_date"` // YYYY-MM-DD
 	GableBranchID    *string   `json:"gable_branch_id,omitempty"`
 	GableVehicleID   *string   `json:"gable_vehicle_id,omitempty"`
+	Loads            []Load    `json:"loads"`
+	UnassignedStops  []Stop    `json:"unassigned_stops"`
 	Stops            []Stop    `json:"stops"`
 	TotalDistanceMi  float64   `json:"total_distance_mi"`
 	TotalDurationMin float64   `json:"total_duration_min"`

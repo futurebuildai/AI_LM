@@ -9,6 +9,9 @@ import {
 } from '../services/aiLmService.ts';
 import '../components/routing/RouteMap.ts';
 
+// Per-load swatch colors — must match the palette in RouteMap.ts.
+const LOAD_COLORS = ['#00FFA3', '#38BDF8', '#FBBF24', '#A78BFA', '#F472B6'];
+
 function today(): string {
   return new Date().toISOString().slice(0, 10);
 }
@@ -126,7 +129,7 @@ export class DispatchBoard extends LitElement {
         <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
           <div class="lg:col-span-2">
             <ailm-route-map
-              .stops=${plan?.stops ?? []}
+              .loads=${plan?.loads ?? []}
               .flags=${this._check?.flags ?? []}
             ></ailm-route-map>
           </div>
@@ -138,38 +141,68 @@ export class DispatchBoard extends LitElement {
                 ? html`
                     <dl class="space-y-2 text-sm">
                       <div class="flex justify-between"><dt class="text-zinc-400">Status</dt><dd class="font-mono ${plan.status === 'APPROVED' ? 'text-gable-green' : 'text-blueprint-blue'}">${plan.status}</dd></div>
+                      <div class="flex justify-between"><dt class="text-zinc-400">Loads</dt><dd class="font-mono">${plan.loads.length}</dd></div>
                       <div class="flex justify-between"><dt class="text-zinc-400">Stops</dt><dd class="font-mono">${plan.stops.length}</dd></div>
                       <div class="flex justify-between"><dt class="text-zinc-400">Distance</dt><dd class="font-mono">${plan.total_distance_mi.toFixed(1)} mi</dd></div>
                       <div class="flex justify-between"><dt class="text-zinc-400">Drive time</dt><dd class="font-mono">${plan.total_duration_min.toFixed(0)} min</dd></div>
                     </dl>
                     <button
                       @click=${this._approve}
-                      ?disabled=${this._approving || plan.status === 'APPROVED'}
+                      ?disabled=${this._approving || plan.status === 'APPROVED' || plan.loads.length === 0}
                       class="mt-4 w-full flex items-center justify-center gap-2 border border-gable-green/40 text-gable-green font-semibold px-4 py-2 rounded-lg hover:bg-gable-green/10 transition-all disabled:opacity-40"
                     >
-                      ${icon(CheckCircle2, 18)} ${plan.status === 'APPROVED' ? 'Approved' : this._approving ? 'Writing back…' : 'Approve & Push to GableLBM'}
+                      ${icon(CheckCircle2, 18)} ${plan.status === 'APPROVED' ? 'Approved' : this._approving ? 'Writing back…' : 'Approve all & push to GableLBM'}
                     </button>
                   `
                 : html`<p class="text-sm text-zinc-500">No plan yet. Pick a date and build a route.</p>`}
             </div>
 
-            ${plan && plan.stops.length > 0
+            ${plan && plan.unassigned_stops.length > 0
               ? html`
-                  <div class="glass-card rounded-xl p-4">
-                    <h2 class="text-sm font-semibold text-zinc-300 mb-3">Stop Sequence</h2>
-                    <ol class="space-y-1.5">
-                      ${plan.stops.map(
-                        (s) => html`
-                          <li class="flex items-center gap-3 text-sm">
-                            <span class="h-6 w-6 shrink-0 rounded-full bg-gable-green/15 text-gable-green font-mono text-xs flex items-center justify-center">${s.sequence}</span>
-                            <span class="flex-1 truncate text-zinc-300">${s.address || s.order_id}</span>
-                            <span class="font-mono text-xs text-zinc-500">${s.weight_lbs.toLocaleString()} lb</span>
-                          </li>
-                        `,
-                      )}
-                    </ol>
+                  <div class="flex items-start gap-2 px-4 py-2.5 rounded-lg border border-amber-warn/30 bg-amber-warn/10 text-amber-warn text-sm">
+                    ${icon(AlertTriangle, 18)}
+                    <div>
+                      <span class="font-medium">${plan.unassigned_stops.length} stop(s) unassigned — no truck has capacity.</span>
+                      <ul class="mt-1 space-y-0.5 text-xs font-mono text-amber-warn/80">
+                        ${plan.unassigned_stops.map(
+                          (s) => html`<li>${s.address || s.order_id} · ${s.weight_lbs.toLocaleString()} lb</li>`,
+                        )}
+                      </ul>
+                    </div>
                   </div>
                 `
+              : nothing}
+
+            ${plan && plan.loads.length > 0
+              ? plan.loads.map((load, li) => {
+                  const color = LOAD_COLORS[li % LOAD_COLORS.length];
+                  return html`
+                    <div class="glass-card rounded-xl p-4">
+                      <div class="flex items-center gap-2 mb-3">
+                        <span class="h-3 w-3 rounded-full shrink-0" style="background:${color};box-shadow:0 0 8px ${color}"></span>
+                        <h2 class="text-sm font-semibold text-zinc-200 flex-1 truncate">${load.vehicle_name}</h2>
+                        <span class="font-mono text-xs text-zinc-500">${load.stops.length} stop(s)</span>
+                      </div>
+                      <dl class="grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs mb-3">
+                        <div class="flex justify-between"><dt class="text-zinc-400">Weight</dt><dd class="font-mono text-zinc-200">${Math.round(load.total_weight_lbs).toLocaleString()} lb</dd></div>
+                        <div class="flex justify-between"><dt class="text-zinc-400">Capacity</dt><dd class="font-mono text-zinc-200">${load.capacity_weight_lbs.toLocaleString()} lb</dd></div>
+                        <div class="flex justify-between"><dt class="text-zinc-400">Distance</dt><dd class="font-mono text-zinc-200">${load.total_distance_mi.toFixed(1)} mi</dd></div>
+                        <div class="flex justify-between"><dt class="text-zinc-400">Drive time</dt><dd class="font-mono text-zinc-200">${load.total_duration_min.toFixed(0)} min</dd></div>
+                      </dl>
+                      <ol class="space-y-1.5">
+                        ${load.stops.map(
+                          (s) => html`
+                            <li class="flex items-center gap-3 text-sm">
+                              <span class="h-6 w-6 shrink-0 rounded-full font-mono text-xs flex items-center justify-center text-deep-space" style="background:${color}">${s.sequence}</span>
+                              <span class="flex-1 truncate text-zinc-300">${s.address || s.order_id}</span>
+                              <span class="font-mono text-xs text-zinc-500">${s.weight_lbs.toLocaleString()} lb</span>
+                            </li>
+                          `,
+                        )}
+                      </ol>
+                    </div>
+                  `;
+                })
               : nothing}
           </div>
         </div>

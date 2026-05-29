@@ -28,12 +28,16 @@ func (r *Repository) Save(ctx context.Context, p *Plan) error {
 	if err != nil {
 		return fmt.Errorf("marshal stops: %w", err)
 	}
+	loads, err := json.Marshal(p.Loads)
+	if err != nil {
+		return fmt.Errorf("marshal loads: %w", err)
+	}
 	err = ex.QueryRow(ctx, `
 		INSERT INTO route_plans
-		    (plan_date, gable_branch_id, gable_vehicle_id, stops, total_distance_mi, total_duration_min, status)
-		VALUES ($1,$2,$3,$4,$5,$6,$7)
+		    (plan_date, gable_branch_id, gable_vehicle_id, stops, loads, total_distance_mi, total_duration_min, status)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
 		RETURNING id, created_at, updated_at`,
-		p.PlanDate, p.GableBranchID, p.GableVehicleID, stops, p.TotalDistanceMi, p.TotalDurationMin, p.Status).
+		p.PlanDate, p.GableBranchID, p.GableVehicleID, stops, loads, p.TotalDistanceMi, p.TotalDurationMin, p.Status).
 		Scan(&p.ID, &p.CreatedAt, &p.UpdatedAt)
 	if err != nil {
 		return fmt.Errorf("insert route_plan: %w", err)
@@ -47,12 +51,13 @@ func (r *Repository) Get(ctx context.Context, id string) (*Plan, error) {
 	var (
 		p     Plan
 		stops []byte
+		loads []byte
 	)
 	err := ex.QueryRow(ctx, `
-		SELECT id, plan_date::text, gable_branch_id, gable_vehicle_id, stops,
+		SELECT id, plan_date::text, gable_branch_id, gable_vehicle_id, stops, loads,
 		       total_distance_mi, total_duration_min, status, created_at, updated_at
 		FROM route_plans WHERE id = $1`, id).
-		Scan(&p.ID, &p.PlanDate, &p.GableBranchID, &p.GableVehicleID, &stops,
+		Scan(&p.ID, &p.PlanDate, &p.GableBranchID, &p.GableVehicleID, &stops, &loads,
 			&p.TotalDistanceMi, &p.TotalDurationMin, &p.Status, &p.CreatedAt, &p.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
@@ -62,6 +67,9 @@ func (r *Repository) Get(ctx context.Context, id string) (*Plan, error) {
 	}
 	if err := json.Unmarshal(stops, &p.Stops); err != nil {
 		return nil, fmt.Errorf("unmarshal stops: %w", err)
+	}
+	if err := json.Unmarshal(loads, &p.Loads); err != nil {
+		return nil, fmt.Errorf("unmarshal loads: %w", err)
 	}
 	return &p, nil
 }

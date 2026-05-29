@@ -1,18 +1,21 @@
 import { LitElement, html } from 'lit';
 import { customElement, property } from 'lit/decorators.js';
 import * as L from 'leaflet';
-import type { RouteStop, ComplianceFlag } from '../../services/aiLmService.ts';
+import type { ComplianceFlag, Load } from '../../services/aiLmService.ts';
+
+// Per-load color palette — one distinct route color per truck.
+const LOAD_COLORS = ['#00FFA3', '#38BDF8', '#FBBF24', '#A78BFA', '#F472B6'];
 
 /**
- * <ailm-route-map> — Leaflet map of an optimized route: ordered numbered stops
- * connected by a polyline, with restricted-point flags overlaid. Re-fits bounds
- * whenever stops/flags change.
+ * <ailm-route-map> — Leaflet map of a multi-load route plan: each load draws its
+ * own colored polyline + numbered stop markers, with restricted-point flags
+ * overlaid. Re-fits bounds whenever loads/flags change.
  */
 @customElement('ailm-route-map')
 export class RouteMap extends LitElement {
   createRenderRoot() { return this; }
 
-  @property({ attribute: false }) stops: RouteStop[] = [];
+  @property({ attribute: false }) loads: Load[] = [];
   @property({ attribute: false }) flags: ComplianceFlag[] = [];
 
   private _map?: L.Map;
@@ -24,7 +27,7 @@ export class RouteMap extends LitElement {
   }
 
   updated(changed: Map<string, unknown>) {
-    if ((changed.has('stops') || changed.has('flags')) && this._map) {
+    if ((changed.has('loads') || changed.has('flags')) && this._map) {
       this._draw();
     }
   }
@@ -44,8 +47,9 @@ export class RouteMap extends LitElement {
     this._layer = L.layerGroup().addTo(this._map);
   }
 
-  private _stopIcon(seq: number, status: 'ok' | 'warn' | 'fail') {
-    const color = status === 'fail' ? '#F43F5E' : status === 'warn' ? '#FBBF24' : '#00FFA3';
+  private _stopIcon(seq: number, status: 'ok' | 'warn' | 'fail', loadColor?: string) {
+    const color =
+      status === 'fail' ? '#F43F5E' : status === 'warn' ? '#FBBF24' : loadColor ?? '#00FFA3';
     return L.divIcon({
       className: 'ailm-stop-marker',
       html: `<div style="background:${color};color:#0A0B10;width:26px;height:26px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-family:'JetBrains Mono',monospace;font-weight:700;font-size:12px;box-shadow:0 0 10px ${color}80;border:2px solid #0A0B10">${seq}</div>`,
@@ -68,21 +72,24 @@ export class RouteMap extends LitElement {
     if (!this._map || !this._layer) return;
     this._layer.clearLayers();
 
-    const latlngs: L.LatLngExpression[] = [];
-    for (const s of this.stops) {
-      latlngs.push([s.lat, s.lng]);
-    }
+    const all: L.LatLngExpression[] = [];
 
-    if (latlngs.length > 1) {
-      L.polyline(latlngs, { color: '#00FFA3', weight: 3, opacity: 0.7, dashArray: '6 6' }).addTo(this._layer);
-    }
+    this.loads.forEach((load, li) => {
+      const color = LOAD_COLORS[li % LOAD_COLORS.length];
+      const latlngs: L.LatLngExpression[] = load.stops.map((s) => [s.lat, s.lng]);
+      all.push(...latlngs);
 
-    this.stops.forEach((s) => {
-      L.marker([s.lat, s.lng], { icon: this._stopIcon(s.sequence, 'ok') })
-        .bindPopup(
-          `<b>Stop ${s.sequence}</b><br/>${s.address || s.order_id}<br/>${s.weight_lbs.toLocaleString()} lbs`,
-        )
-        .addTo(this._layer!);
+      if (latlngs.length > 1) {
+        L.polyline(latlngs, { color, weight: 3, opacity: 0.7, dashArray: '6 6' }).addTo(this._layer!);
+      }
+
+      load.stops.forEach((s) => {
+        L.marker([s.lat, s.lng], { icon: this._stopIcon(s.sequence, 'ok', color) })
+          .bindPopup(
+            `<b>${load.vehicle_name} — Stop ${s.sequence}</b><br/>${s.address || s.order_id}<br/>${s.weight_lbs.toLocaleString()} lbs`,
+          )
+          .addTo(this._layer!);
+      });
     });
 
     this.flags.forEach((f) => {
@@ -91,7 +98,7 @@ export class RouteMap extends LitElement {
         .addTo(this._layer!);
     });
 
-    const all = [...latlngs, ...this.flags.map((f) => [f.point.lat, f.point.lng] as L.LatLngExpression)];
+    all.push(...this.flags.map((f) => [f.point.lat, f.point.lng] as L.LatLngExpression));
     if (all.length > 0) {
       this._map.fitBounds(L.latLngBounds(all).pad(0.2));
     }

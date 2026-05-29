@@ -12,6 +12,12 @@ type orderSource interface {
 	ListOrdersForDate(ctx context.Context, date string) ([]gable.Order, error)
 }
 
+// vehicleSource fetches the fleet (with capacities) for CVRP assignment
+// (satisfied by *gable.Client).
+type vehicleSource interface {
+	ListVehicles(ctx context.Context) ([]gable.Vehicle, error)
+}
+
 // routeSink writes an approved route back to GableLBM (satisfied by *gable.Client).
 type routeSink interface {
 	PushDeliveryRoute(ctx context.Context, route gable.DeliveryRoute) error
@@ -19,13 +25,14 @@ type routeSink interface {
 
 // Service orchestrates route planning and write-back.
 type Service struct {
-	repo   *Repository
-	orders orderSource
-	sink   routeSink
+	repo     *Repository
+	orders   orderSource
+	vehicles vehicleSource
+	sink     routeSink
 }
 
-func NewService(repo *Repository, orders orderSource, sink routeSink) *Service {
-	return &Service{repo: repo, orders: orders, sink: sink}
+func NewService(repo *Repository, orders orderSource, vehicles vehicleSource, sink routeSink) *Service {
+	return &Service{repo: repo, orders: orders, vehicles: vehicles, sink: sink}
 }
 
 // Plan pulls confirmed orders for the date, optimizes the stop sequence, and
@@ -71,18 +78,41 @@ func (s *Service) Plan(ctx context.Context, req PlanRequest) (*Plan, error) {
 		depotLng = sumLng / float64(len(stops))
 	}
 
-	ordered, distance, duration := optimizeSequence(depotLat, depotLng, stops)
-	if ordered == nil {
-		ordered = []Stop{}
+	// Pull the live fleet and bin-pack stops across trucks by capacity (CVRP).
+	vehicles, err := s.vehicles.ListVehicles(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("fetch vehicles: %w", err)
+	}
+	loads, unassigned := assignLoads(vehicles, stops)
+
+	// Sequence each load independently and aggregate the plan-level totals.
+	flattened := []Stop{}
+	var totalDistance, totalDuration float64
+	for i := range loads {
+		ordered, distance, duration := optimizeSequence(depotLat, depotLng, loads[i].Stops)
+		if ordered == nil {
+			ordered = []Stop{}
+		}
+		loads[i].Stops = ordered
+		loads[i].TotalDistanceMi = distance
+		loads[i].TotalDurationMin = duration
+		flattened = append(flattened, ordered...)
+		totalDistance += distance
+		totalDuration += duration
+	}
+	if unassigned == nil {
+		unassigned = []Stop{}
 	}
 
 	plan := &Plan{
 		PlanDate:         req.Date,
 		GableBranchID:    req.BranchID,
 		GableVehicleID:   req.VehicleID,
-		Stops:            ordered,
-		TotalDistanceMi:  distance,
-		TotalDurationMin: duration,
+		Loads:            loads,
+		UnassignedStops:  unassigned,
+		Stops:            flattened,
+		TotalDistanceMi:  round2(totalDistance),
+		TotalDurationMin: round2(totalDuration),
 		Status:           "DRAFT",
 	}
 	if err := s.repo.Save(ctx, plan); err != nil {
@@ -103,26 +133,30 @@ func (s *Service) Approve(ctx context.Context, id string) (*Plan, error) {
 		return nil, err
 	}
 
-	if plan.GableVehicleID == nil || *plan.GableVehicleID == "" {
-		return nil, fmt.Errorf("plan has no vehicle assigned; cannot write back")
+	if len(plan.Loads) == 0 {
+		return nil, fmt.Errorf("plan has no loads assigned; cannot write back")
 	}
 
-	route := gable.DeliveryRoute{
-		VehicleID:     *plan.GableVehicleID,
-		ScheduledDate: plan.PlanDate,
-	}
-	for _, st := range plan.Stops {
-		route.Stops = append(route.Stops, gable.RouteStop{
-			OrderID:  st.OrderID,
-			Sequence: st.Sequence,
-			Lat:      st.Lat,
-			Lng:      st.Lng,
-		})
+	// One delivery_route per load. Each push is idempotent upstream on
+	// (vehicle_id, scheduled_date).
+	for _, load := range plan.Loads {
+		route := gable.DeliveryRoute{
+			VehicleID:     load.VehicleID,
+			ScheduledDate: plan.PlanDate,
+		}
+		for _, st := range load.Stops {
+			route.Stops = append(route.Stops, gable.RouteStop{
+				OrderID:  st.OrderID,
+				Sequence: st.Sequence,
+				Lat:      st.Lat,
+				Lng:      st.Lng,
+			})
+		}
+		if err := s.sink.PushDeliveryRoute(ctx, route); err != nil {
+			return nil, fmt.Errorf("write back to GableLBM (vehicle %s): %w", load.VehicleID, err)
+		}
 	}
 
-	if err := s.sink.PushDeliveryRoute(ctx, route); err != nil {
-		return nil, fmt.Errorf("write back to GableLBM: %w", err)
-	}
 	if err := s.repo.UpdateStatus(ctx, id, "APPROVED"); err != nil {
 		return nil, err
 	}
