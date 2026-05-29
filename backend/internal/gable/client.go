@@ -54,14 +54,22 @@ type Driver struct {
 	Status string `json:"status"` // ACTIVE/INACTIVE/ON_LEAVE
 }
 
-// Product is a catalog product including its per-unit weight.
+// Product is a catalog product including its per-unit weight and the PIM's
+// canonical parametric geometry. The L/W/H fields are pointers so a nil value
+// ("PIM has no geometry yet") is distinguishable from a real zero dimension;
+// AI_LM falls back to its own override/default when they are nil.
 type Product struct {
-	ID       string  `json:"id"`
-	SKU      string  `json:"sku"`
-	Name     string  `json:"name"`
-	Category string  `json:"category,omitempty"`
-	UOM      string  `json:"uom,omitempty"`
-	WeightLbs float64 `json:"weight_lbs"`
+	ID             string   `json:"id"`
+	SKU            string   `json:"sku"`
+	Name           string   `json:"name"`
+	Category       string   `json:"category,omitempty"`
+	UOM            string   `json:"uom,omitempty"`
+	WeightLbs      float64  `json:"weight_lbs"`
+	LengthIn       *float64 `json:"length_in"`
+	WidthIn        *float64 `json:"width_in"`
+	HeightIn       *float64 `json:"height_in"`
+	Stackable      *bool    `json:"stackable"`
+	GeometrySource string   `json:"geometry_source,omitempty"`
 }
 
 // OrderLine is a single line item on an order.

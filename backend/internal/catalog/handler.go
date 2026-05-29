@@ -28,9 +28,26 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux, roleGuard ...func(http.Hand
 		return handler
 	}
 
+	mux.HandleFunc("GET /api/v1/catalog/products", guard(h.HandleListProducts))
 	mux.HandleFunc("GET /api/v1/catalog/dimensions", guard(h.HandleListDimensions))
 	mux.HandleFunc("GET /api/v1/catalog/dimensions/{productId}", guard(h.HandleGetDimension))
 	mux.HandleFunc("PUT /api/v1/catalog/dimensions/{productId}", guard(h.HandleUpsertDimension))
+}
+
+// HandleListProducts returns the resolved load-planning catalog (PIM geometry
+// merged with AI_LM overrides) for the Load Builder. A failure to reach the PIM
+// is surfaced as 502 Bad Gateway so the UI can distinguish an upstream outage
+// from a legitimately empty catalog.
+func (h *Handler) HandleListProducts(w http.ResponseWriter, r *http.Request) {
+	products, err := h.svc.ListEffectiveProducts(r.Context())
+	if err != nil {
+		httputil.RespondError(w, r, "failed to load catalog from PIM", http.StatusBadGateway, err)
+		return
+	}
+	if products == nil {
+		products = []EffectiveProduct{}
+	}
+	httputil.RespondJSON(w, http.StatusOK, products)
 }
 
 func (h *Handler) HandleListDimensions(w http.ResponseWriter, r *http.Request) {
