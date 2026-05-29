@@ -18,6 +18,12 @@ type vehicleSource interface {
 	ListVehicles(ctx context.Context) ([]gable.Vehicle, error)
 }
 
+// driverSource fetches the fleet's drivers; GableLBM requires a valid driver id
+// on delivery-route write-back (satisfied by *gable.Client).
+type driverSource interface {
+	ListDrivers(ctx context.Context) ([]gable.Driver, error)
+}
+
 // routeSink writes an approved route back to GableLBM (satisfied by *gable.Client).
 type routeSink interface {
 	PushDeliveryRoute(ctx context.Context, route gable.DeliveryRoute) error
@@ -28,11 +34,12 @@ type Service struct {
 	repo     *Repository
 	orders   orderSource
 	vehicles vehicleSource
+	drivers  driverSource
 	sink     routeSink
 }
 
-func NewService(repo *Repository, orders orderSource, vehicles vehicleSource, sink routeSink) *Service {
-	return &Service{repo: repo, orders: orders, vehicles: vehicles, sink: sink}
+func NewService(repo *Repository, orders orderSource, vehicles vehicleSource, drivers driverSource, sink routeSink) *Service {
+	return &Service{repo: repo, orders: orders, vehicles: vehicles, drivers: drivers, sink: sink}
 }
 
 // Plan pulls confirmed orders for the date, optimizes the stop sequence, and
@@ -84,6 +91,14 @@ func (s *Service) Plan(ctx context.Context, req PlanRequest) (*Plan, error) {
 		return nil, fmt.Errorf("fetch vehicles: %w", err)
 	}
 	loads, unassigned := assignLoads(vehicles, stops)
+
+	// GableLBM requires a valid driver id on write-back. Assign drivers to loads
+	// round-robin (deterministic, ACTIVE first) so each load can be pushed.
+	drivers, err := s.drivers.ListDrivers(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("fetch drivers: %w", err)
+	}
+	assignDrivers(drivers, loads)
 
 	// Sequence each load independently and aggregate the plan-level totals.
 	flattened := []Stop{}
@@ -142,6 +157,7 @@ func (s *Service) Approve(ctx context.Context, id string) (*Plan, error) {
 	for _, load := range plan.Loads {
 		route := gable.DeliveryRoute{
 			VehicleID:     load.VehicleID,
+			DriverID:      load.DriverID,
 			ScheduledDate: plan.PlanDate,
 		}
 		for _, st := range load.Stops {

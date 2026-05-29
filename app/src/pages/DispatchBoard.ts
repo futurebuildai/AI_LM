@@ -178,11 +178,14 @@ export class DispatchBoard extends LitElement {
                   const color = LOAD_COLORS[li % LOAD_COLORS.length];
                   return html`
                     <div class="glass-card rounded-xl p-4">
-                      <div class="flex items-center gap-2 mb-3">
+                      <div class="flex items-center gap-2 mb-1">
                         <span class="h-3 w-3 rounded-full shrink-0" style="background:${color};box-shadow:0 0 8px ${color}"></span>
                         <h2 class="text-sm font-semibold text-zinc-200 flex-1 truncate">${load.vehicle_name}</h2>
                         <span class="font-mono text-xs text-zinc-500">${load.stops.length} stop(s)</span>
                       </div>
+                      <p class="text-xs text-zinc-400 mb-3 pl-5 truncate">
+                        ${load.driver_name ? html`Driver: <span class="text-zinc-300">${load.driver_name}</span>` : html`<span class="text-amber-warn">No driver assigned</span>`}
+                      </p>
                       <dl class="grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs mb-3">
                         <div class="flex justify-between"><dt class="text-zinc-400">Weight</dt><dd class="font-mono text-zinc-200">${Math.round(load.total_weight_lbs).toLocaleString()} lb</dd></div>
                         <div class="flex justify-between"><dt class="text-zinc-400">Capacity</dt><dd class="font-mono text-zinc-200">${load.capacity_weight_lbs.toLocaleString()} lb</dd></div>

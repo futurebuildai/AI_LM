@@ -122,7 +122,7 @@ func main() {
 	load.NewHandler(loadSvc).RegisterRoutes(mux, writeGuard)
 
 	// Routing (pillar 2).
-	routingSvc := routing.NewService(routing.NewRepository(db), gableClient, gableClient, gableClient)
+	routingSvc := routing.NewService(routing.NewRepository(db), gableClient, gableClient, gableClient, gableClient)
 	routing.NewHandler(routingSvc).RegisterRoutes(mux, writeGuard)
 
 	// Compliance (pillar 2).

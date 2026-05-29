@@ -21,6 +21,8 @@ type Stop struct {
 type Load struct {
 	VehicleID         string  `json:"vehicle_id"`
 	VehicleName       string  `json:"vehicle_name"`
+	DriverID          string  `json:"driver_id"`
+	DriverName        string  `json:"driver_name"`
 	CapacityWeightLbs int     `json:"capacity_weight_lbs"`
 	Stops             []Stop  `json:"stops"`
 	TotalWeightLbs    float64 `json:"total_weight_lbs"`

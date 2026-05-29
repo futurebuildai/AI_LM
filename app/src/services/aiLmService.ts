@@ -142,6 +142,8 @@ export interface RouteStop {
 export interface Load {
   vehicle_id: string;
   vehicle_name: string;
+  driver_id: string;
+  driver_name: string;
   capacity_weight_lbs: number;
   stops: RouteStop[];
   total_weight_lbs: number;

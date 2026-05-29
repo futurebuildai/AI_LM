@@ -46,6 +46,14 @@ type Vehicle struct {
 	Year              int    `json:"year,omitempty"`
 }
 
+// Driver is a fleet driver from GableLBM. A valid driver id is required on
+// delivery-route write-back.
+type Driver struct {
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	Status string `json:"status"` // ACTIVE/INACTIVE/ON_LEAVE
+}
+
 // Product is a catalog product including its per-unit weight.
 type Product struct {
 	ID       string  `json:"id"`
@@ -97,6 +105,16 @@ type DeliveryRoute struct {
 func (c *Client) ListVehicles(ctx context.Context) ([]Vehicle, error) {
 	var out []Vehicle
 	if err := c.do(ctx, http.MethodGet, "/api/integration/vehicles", nil, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// ListDrivers returns the GableLBM drivers. GableLBM's integration endpoints
+// return bare JSON arrays (not an enveloped object).
+func (c *Client) ListDrivers(ctx context.Context) ([]Driver, error) {
+	var out []Driver
+	if err := c.do(ctx, http.MethodGet, "/api/integration/drivers", nil, &out); err != nil {
 		return nil, err
 	}
 	return out, nil
