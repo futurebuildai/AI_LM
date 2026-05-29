@@ -1,0 +1,116 @@
+# Digital Ocean App Platform spec — AI_LM STAGING environment.
+#
+# Standalone deploy of github.com/futurebuildai/AI_LM (branch `main`). Uses the
+# auto-generated *.ondigitalocean.app URL (no custom domain). Backed by a DO
+# Managed Postgres cluster (`ai-lm-pg-staging`), logical DB `ai_lm_staging`.
+#
+# Integration target: GableLBM's `community` branch, deployed to
+# https://demo.gablelbm.com. AI_LM pulls orders/products/vehicles from there
+# via /api/integration/* using GABLE_INTEGRATION_KEY and writes approved routes
+# back the same way. AUTH_MODE=dev is acceptable on staging (demo data is
+# non-confidential). INSTANCE_COUNT must remain 1 (in-memory middleware).
+#
+# CORS_ORIGINS is intentionally unset: App Platform path-routes /api, /healthz
+# and /metrics to the backend under the SAME app URL as the frontend, so all
+# browser calls are same-origin and never hit CORS.
+#
+# Apply with: doctl apps create --spec .do/app-staging.yaml  (first time)
+#             doctl apps update <app-id> --spec .do/app-staging.yaml
+name: ai-lm-staging
+region: nyc
+alerts:
+  - rule: DEPLOYMENT_FAILED
+  - rule: DOMAIN_FAILED
+
+services:
+  - name: backend
+    dockerfile_path: backend/Dockerfile
+    source_dir: /
+    github:
+      repo: futurebuildai/AI_LM
+      branch: main
+      deploy_on_push: true
+    instance_count: 1
+    instance_size_slug: basic-xxs
+    http_port: 8090
+    health_check:
+      http_path: /healthz/live
+      initial_delay_seconds: 15
+      period_seconds: 30
+      failure_threshold: 3
+    routes:
+      # preserve_path_prefix keeps the original path when proxying to the
+      # container; without it App Platform strips the matched prefix and the
+      # Go router 404s (e.g. /healthz/live → /live).
+      - path: /api
+        preserve_path_prefix: true
+      - path: /healthz
+        preserve_path_prefix: true
+      - path: /metrics
+        preserve_path_prefix: true
+    envs:
+      - key: PORT
+        value: "8090"
+      - key: AUTH_MODE
+        value: dev
+      # GableLBM community deployment — public base URL, not a secret.
+      - key: GABLE_API_URL
+        value: https://demo.gablelbm.com
+        scope: RUN_AND_BUILD_TIME
+      # Must match GableLBM community's INTEGRATION_API_KEY.
+      - key: GABLE_INTEGRATION_KEY
+        scope: RUN_TIME
+        type: SECRET
+      - key: DATABASE_URL
+        value: ${ai-lm-pg-staging.DATABASE_URL}
+        scope: RUN_AND_BUILD_TIME
+        type: SECRET
+
+  - name: frontend
+    dockerfile_path: app/Dockerfile
+    source_dir: /
+    github:
+      repo: futurebuildai/AI_LM
+      branch: main
+      deploy_on_push: true
+    instance_count: 1
+    instance_size_slug: basic-xxs
+    http_port: 8080
+    build_command: ""
+    envs:
+      # The Lit app calls relative /api/v1 paths. App Platform path-routes /api
+      # to the backend; nginx's /api proxy is the same-origin fallback when the
+      # frontend container is hit directly.
+      - key: BACKEND_URL
+        value: ${backend.PRIVATE_URL}
+        scope: RUN_TIME
+    routes:
+      - path: /
+
+jobs:
+  - name: migrate-and-seed
+    kind: POST_DEPLOY
+    dockerfile_path: backend/Dockerfile
+    source_dir: /
+    github:
+      repo: futurebuildai/AI_LM
+      branch: main
+    instance_count: 1
+    instance_size_slug: basic-xxs
+    # sh -c is required so ./seed runs after ./migrate — App Platform splits
+    # run_command on whitespace and passes argv to the first binary directly.
+    run_command: sh -c "./migrate && ./seed"
+    envs:
+      - key: DATABASE_URL
+        value: ${ai-lm-pg-staging.DATABASE_URL}
+        scope: RUN_TIME
+        type: SECRET
+
+databases:
+  - name: ai-lm-pg-staging
+    engine: PG
+    version: "16"
+    production: true
+    cluster_name: ai-lm-pg-staging
+    db_name: ai_lm_staging
+    db_user: ai_lm_user
