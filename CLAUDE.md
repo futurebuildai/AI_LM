@@ -47,6 +47,11 @@ backend/      → Go backend (stdlib http.ServeMux + pgx + PostgreSQL)
 docker-compose.yml  → Local Postgres (:5434, db ai_lm_db)
 ```
 
+### Companion docs
+- `ARCHITECTURE.md` — module map, request flow, the digital-twin pipeline, design decisions.
+- `INTEGRATIONS.md` — the GableLBM contract this service consumes (and how to swap the backend).
+- `DEVOPS.md` — deployment source-of-truth: DO apps, `doctl` runbook, app IDs, migrate/seed, rollback.
+
 ## Tech Stack
 
 Mirrors GableLBM/GableRun exactly for cross-repo consistency.
@@ -103,7 +108,8 @@ GableLBM (source of truth)            AI_LM
 |--------|------|--------|
 | GET    | `/fleet/profiles`                       | fleet |
 | GET/PUT| `/fleet/profiles/{vehicleId}`           | fleet |
-| GET    | `/catalog/dimensions`                   | catalog |
+| GET    | `/catalog/products`                     | catalog (resolved `EffectiveProduct` list — Load Builder) |
+| GET    | `/catalog/dimensions`                   | catalog (override-management surface) |
 | GET/PUT| `/catalog/dimensions/{productId}`       | catalog |
 | POST   | `/load/optimize`                        | load |
 | GET    | `/load/{id}`                            | load |
@@ -115,6 +121,38 @@ GableLBM (source of truth)            AI_LM
 | PUT    | `/compliance/restricted-points/{id}`    | compliance |
 
 Write routes are gated by `middleware.RequireRole("admin","owner","dispatcher","yard")`.
+
+## Digital-Twin Geometry Resolution
+
+The Load Builder renders each product as a scaled box (a **digital twin**) against the
+truck bed. GableLBM's PIM is the **canonical** source of per-product L/W/H; AI_LM keeps
+optional overrides. The catalog service resolves the winning geometry per product:
+
+```
+OVERRIDE  (non-zero AI_LM product_dimensions row, default_source=MANUAL)
+   └─▶ PIM     (non-null length/width/height from GableLBM /api/integration/products)
+          └─▶ FALLBACK (no usable dims → has_geometry=false → UI flags it, no zero-box)
+```
+
+- **Resolver:** `catalog.Service.ListEffectiveProducts(ctx)` + the unit-testable
+  `resolveGeometry(p gable.Product, ovr *Dimension)` helper. The merge is backend-owned —
+  `*gable.Client` is injected into `catalog.Service` via the narrow `productSource`
+  interface (wired in `cmd/server/main.go`). Weight = override else PIM weight.
+- **Output:** `EffectiveProduct` (`catalog/model.go`) — `geometry_source` is
+  `OVERRIDE`/`PIM`/`FALLBACK`, `has_geometry` is the render gate.
+- **Endpoint:** `GET /api/v1/catalog/products` returns `[]EffectiveProduct`. Returns
+  `502 Bad Gateway` when GableLBM is unreachable so the UI distinguishes outage from an
+  empty catalog.
+- **Shared scaling contract:** `_scale = 1/12` in `Load3DVisualizer.ts` —
+  **1 inch = 1/12 Three.js world unit**. GableLBM's PIM preview
+  (`<gable-product-twin-3d>`) uses the identical factor; a 96″ board is `8` world units in
+  both apps. Do not change one side without the other.
+- **Dependency:** hydrating the full catalog requires GableLBM's **unfiltered** bulk
+  product pull (`GetProductsWithWeight` calls `/api/integration/products` with no params →
+  `LIMIT 1000`). GableLBM commit `b5170de` enables this; an empty `?q=` does **not** work
+  (it still counts as "no filter" but the older guard rejected it).
+
+See `INTEGRATIONS.md` for the consumer contract and `ARCHITECTURE.md` for the module map.
 
 ## Key Conventions
 
@@ -186,10 +224,15 @@ docker compose up -d # Postgres on :5434 (db ai_lm_db)
 
 ## Integration Contract (the licensing surface)
 
-AI_LM consumes these GableLBM endpoints (all `X-Integration-Key` gated):
+AI_LM consumes these GableLBM endpoints (all `X-Integration-Key` gated; base URL is
+`GABLE_API_URL`, key is `GABLE_INTEGRATION_KEY`):
 
-- `GET  /api/integration/products?category=|q=`  → adds `weight_lbs` per unit.
+- `GET  /api/integration/products`               → per-unit `weight_lbs` **plus canonical
+  3D geometry** (`length_in`, `width_in`, `height_in`, `stackable`, `geometry_source`).
+  Called **with no params** by `gable.Client.GetProductsWithWeight` for a full bulk pull
+  (`LIMIT 1000`); `?category=`/`?q=` narrow it to a `LIMIT 20` typeahead.
 - `GET  /api/integration/vehicles`               → fleet (id, name, type, capacity, make/model/year).
+- `GET  /api/integration/drivers`                → drivers for route write-back.
 - `GET  /api/integration/orders?date=&status=CONFIRMED` → orders + line items
   (`product_id, sku, quantity, weight_lbs`) and delivery `latitude/longitude` where present.
 - `POST /api/integration/delivery-routes`        → write-back of an approved plan
@@ -206,8 +249,33 @@ A different ERP can satisfy this contract to reuse AI_LM unchanged.
 - New endpoints under `/api/v1` and wired into a `RegisterRoutes` call in
   `backend/cmd/server/main.go`.
 
-## Out of Scope (future phases)
-- Real distance-matrix/Maps provider (MVP routing is a heuristic behind a pluggable interface).
+## Roadmap & Recommended Next Work
+
+### Recently completed (do not re-recommend)
+- **PIM-canonical geometry resolver** — `EffectiveProduct` + `resolveGeometry`
+  (OVERRIDE → PIM → FALLBACK), `GET /api/v1/catalog/products`, `gable.Client` carrying PIM
+  dims, and the Load Builder loading real products as scaled digital twins (commit
+  `ee95607`). Depends on GableLBM's unfiltered bulk pull (`b5170de`).
+
+### Recommended next (grounded in current code)
+1. **`is_override` clarity in `product_dimensions`.** Override-vs-default is currently
+   inferred from non-zero dims + `default_source`. A first-class flag (or a clean
+   `MANUAL`/`PIM_CACHE` enum) would make `resolveGeometry` unambiguous and testable, and
+   stop a legitimately-zero dimension from reading as "no override".
+2. **Persist/refresh a PIM geometry cache.** `ListEffectiveProducts` hits GableLBM live on
+   every call. Cache the bulk pull (TTL or webhook-invalidated) so the Load Builder degrades
+   gracefully when GableLBM is mid-deploy instead of returning `502`.
+3. **Load straight from an order.** Today the user hand-adds products. Wire
+   `/api/integration/orders` → Load Builder so a dispatcher optimizes an actual day's
+   delivery, not a manual basket.
+4. **Real distance-matrix routing provider.** Swap the nearest-neighbor + 2-opt heuristic
+   behind `routing` for a Maps/OSRM matrix; the interface seam already exists.
+5. **Stackability + orientation in the solver.** `stackable` is carried end-to-end but the
+   placement solver does not yet forbid stacking on non-stackable items (e.g. the 6×6 PT
+   post) or constrain long-piece orientation.
+
+### Out of Scope (future phases)
+- Mesh/GLTF product assets (parametric boxes only; `geometry_source` reserves the seam).
 - ML-based placement (MVP solver is deterministic behind `load.Solver`).
 - PostGIS geometry (MVP uses lat/lng + haversine buffer).
 - Commercial multi-ERP adapters + licensing/metering (API shape is designed for it).
