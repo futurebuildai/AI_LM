@@ -96,6 +96,15 @@ GableLBM (source of truth)            AI_LM
 - **Pattern:** Modular monolith — single Go binary, modules under `backend/internal/`.
 - **Module shape:** `model.go`, `repository.go` (pgx), `service.go`, `handler.go`. Wired
   in `backend/cmd/server/main.go`.
+- **`internal/workflow` is the orchestrator** for the guided end-to-end flow
+  (ingest → analyze → assign → pack → review → push). It reuses the other
+  modules through narrow interfaces (gable client, catalog resolver, fleet
+  profiles, compliance checker) and persists each run as one JSONB document in
+  `workflow_plans` so the UI can resume any stage. Truck assignment is a
+  sweep-angle CVRP (`assign.go`: 80% cargo cap, max 3 stops/truck, shift-length
+  cap); compliance review (`review.go`) auto-resolves FAIL flags by inserting
+  detour waypoints, re-packing under a height cap, or moving stops to another
+  truck (activating an idle vehicle if needed).
 - **Solver/optimizer are deterministic heuristics behind interfaces** (`load.Solver`,
   nearest-neighbor + 2-opt routing, haversine restricted-point buffering) so an
   AI/optimizer can replace them later without touching callers.
@@ -119,6 +128,15 @@ GableLBM (source of truth)            AI_LM
 | POST   | `/compliance/check-route`               | compliance |
 | GET/POST | `/compliance/restricted-points`       | compliance |
 | PUT    | `/compliance/restricted-points/{id}`    | compliance |
+| POST   | `/workflow/plans`                       | workflow (step 1+2: ingest a date's orders + deep analysis) |
+| GET    | `/workflow/plans/latest?date=`          | workflow |
+| GET    | `/workflow/plans/{id}`                  | workflow |
+| POST   | `/workflow/plans/{id}/assign`           | workflow (step 3: sweep-CVRP truck assignment + sequencing) |
+| POST   | `/workflow/plans/{id}/pack`             | workflow (step 4: LIFO tier packing, all trucks) |
+| PUT    | `/workflow/plans/{id}/loads/{vehicleId}/sequence` | workflow (manual stop reorder → re-pack) |
+| POST   | `/workflow/plans/{id}/review`           | workflow (step 5: restricted-point check + AI reroute/load-adjust) |
+| POST   | `/workflow/plans/{id}/push`             | workflow (step 6: routes + packing manifests → GableLBM) |
+| POST   | `/workflow/demo-seed`                   | workflow (proxies GableLBM demo order seeding) |
 
 Write routes are gated by `middleware.RequireRole("admin","owner","dispatcher","yard")`.
 
@@ -163,7 +181,8 @@ See `INTEGRATIONS.md` for the consumer contract and `ARCHITECTURE.md` for the mo
 - Physical quantities: `DECIMAL(19,4)`. Money in AI_LM-native tables: **BIGINT cents**.
 - Weights/dimensions: `BIGINT` lb and integer inches where exact; lat/lng `DOUBLE PRECISION`.
 - Migrations in `backend/migrations/` as numbered SQL with a sibling `_NNN_*_down.sql`
-  rollback. The migrator (`cmd/migrate`) skips `*_down.sql`. Current set: `001_ai_lm_core`.
+  rollback. The migrator (`cmd/migrate`) skips `*_down.sql`. Current set:
+  `001_ai_lm_core`, `002_route_plan_loads`, `003_workflow_plans`.
 
 ### Backend Code
 - Config: env vars with `godotenv` fallback (`internal/config/config.go`). Default DB URL
@@ -174,6 +193,15 @@ See `INTEGRATIONS.md` for the consumer contract and `ARCHITECTURE.md` for the mo
 
 ### Frontend Code
 - Layout shell: `<ailm-app-shell>` (collapsible sidebar). Pages under `app/src/pages/`.
+- **The primary surface is `/plan` (`<ailm-plan-workflow>`)** — a single-page
+  five-step guided workflow (Ingest & Analyze → Assign Trucks → Pack Loads →
+  Route Review → Manifest & Push) that replaced the old separate Dispatch Board
+  and Load Builder pages (`/dispatch` and `/load` redirect to it). It includes
+  the demo-seed button, per-truck 3D packing with wood-tone bundle twins and a
+  packing-step playback slider, stop resequencing, the AI compliance-resolution
+  log, and the final push to GableLBM.
+- `<ailm-load-3d-visualizer>` supports `colorMode="wood"` (realistic lumber
+  twins, per-stop edge accents) and `visibleSteps` for pack-order playback.
 - All custom elements use the `ailm-` prefix.
 - Design tokens in `tailwind.config.js`; never hardcode colors. Use JetBrains Mono for all
   numbers/weights/dimensions.
@@ -235,9 +263,16 @@ AI_LM consumes these GableLBM endpoints (all `X-Integration-Key` gated; base URL
 - `GET  /api/integration/drivers`                → drivers for route write-back.
 - `GET  /api/integration/orders?date=&status=CONFIRMED` → orders + line items
   (`product_id, sku, quantity, weight_lbs`) and delivery `latitude/longitude` where present.
+  `date` filters on the order's `scheduled_delivery_date`.
 - `POST /api/integration/delivery-routes`        → write-back of an approved plan
-  (`vehicle_id, driver_id, scheduled_date, stops[]{order_id, sequence, lat, lng}`).
+  (`vehicle_id, driver_id, scheduled_date, stops[]{order_id, sequence, lat, lng}`,
+  optional `load_manifest` JSON — the 3D packing manifest that powers GableLBM's
+  yard **Pack Trucks** step-by-step loading surface).
   Idempotent on `(vehicle_id, scheduled_date)`.
+- `POST /api/integration/demo/seed-orders`       → demo seeding: creates next-day
+  CONFIRMED lumber orders (with delivery geopoints) and stamps realistic
+  actual-size dimensions on the lumber SKUs so digital twins render true to scale.
+  Optional `{date}`; re-seeding a date replaces its previously seeded orders.
 
 A different ERP can satisfy this contract to reuse AI_LM unchanged.
 
@@ -256,6 +291,15 @@ A different ERP can satisfy this contract to reuse AI_LM unchanged.
   (OVERRIDE → PIM → FALLBACK), `GET /api/v1/catalog/products`, `gable.Client` carrying PIM
   dims, and the Load Builder loading real products as scaled digital twins (commit
   `ee95607`). Depends on GableLBM's unfiltered bulk pull (`b5170de`).
+- **End-to-end guided dispatch workflow** — the `internal/workflow` orchestrator
+  + the single-page `/plan` stepper (merging the old Dispatch Board and Load
+  Builder): date ingest with per-order deep analysis, sweep-CVRP truck
+  assignment, LIFO **tier** packing (last stop bottom, first stop on top, every
+  board an individual placement with a pack `step`), restricted-point review
+  with automatic reroute/load-adjust, manifest push to GableLBM (dispatch board
+  + yard Pack Trucks), and the demo-seed button. Items #3 and #5 of the list
+  below are largely superseded by this (order-driven packing exists; stacking
+  is handled by per-SKU banded bundles).
 
 ### Recommended next (grounded in current code)
 1. **`is_override` clarity in `product_dimensions`.** Override-vs-default is currently

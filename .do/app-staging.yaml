@@ -22,6 +22,14 @@ alerts:
   - rule: DEPLOYMENT_FAILED
   - rule: DOMAIN_FAILED
 
+# Public custom domain. gablelbm.com's DNS zone is NOT managed in this DO
+# account — the registrar/DNS provider needs a CNAME:
+#   load.gablelbm.com → ai-lm-staging-b6ssv.ondigitalocean.app
+# App Platform provisions the TLS cert automatically once the record resolves.
+domains:
+  - domain: load.gablelbm.com
+    type: PRIMARY
+
 services:
   - name: backend
     dockerfile_path: backend/Dockerfile

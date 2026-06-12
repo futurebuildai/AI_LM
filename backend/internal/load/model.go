@@ -40,6 +40,11 @@ type Axle struct {
 // Placement is one positioned unit box in the 3D scene. Coordinates are inches
 // from the front-left-floor corner of the bed: X = length (front→back),
 // Y = width (left→right), Z = height (floor→up).
+//
+// For sequenced (multi-stop) plans, OrderID/StopSequence tie the unit to its
+// delivery stop and Step is its 1-based position in the physical packing order
+// (step 1 is loaded first, at the nose; the first stop's material is loaded
+// last so it comes off first).
 type Placement struct {
 	ItemID    string  `json:"item_id"`
 	SKU       string  `json:"sku"`
@@ -51,6 +56,10 @@ type Placement struct {
 	HeightIn  float64 `json:"height_in"`
 	WeightLbs float64 `json:"weight_lbs"`
 	AxleGroup int     `json:"axle_group"` // nearest axle number, for color coding
+
+	OrderID      string `json:"order_id,omitempty"`
+	StopSequence int    `json:"stop_sequence,omitempty"`
+	Step         int    `json:"step,omitempty"`
 }
 
 // AxleLoad is the computed load on one axle vs its rating.
@@ -74,5 +83,34 @@ type Plan struct {
 	BalanceScore    float64     `json:"balance_score"` // 0..1, higher = better
 	GVWStatus       string      `json:"gvw_status"`    // PASS/WARN/FAIL
 	Unplaced        []string    `json:"unplaced"`      // SKUs that did not fit
+	MaxLoadHeightIn float64     `json:"max_load_height_in,omitempty"`
+	Securement      *Securement `json:"securement,omitempty"`
 	CreatedAt       time.Time   `json:"created_at"`
+}
+
+// StopItems is one delivery stop's resolved line items for sequenced packing.
+type StopItems struct {
+	OrderID      string `json:"order_id"`
+	StopSequence int    `json:"stop_sequence"`
+	Items        []Item `json:"items"`
+}
+
+// Strap is one tie-down across the load at a longitudinal position.
+type Strap struct {
+	Number         int     `json:"number"`
+	PositionIn     float64 `json:"position_in"`      // inches from the bed front
+	OverHeightIn   float64 `json:"over_height_in"`   // load height under the strap
+	RequiredWLLLbs int64   `json:"required_wll_lbs"` // working-load-limit share
+}
+
+// Securement is the tie-down plan for a packed load, derived from the
+// FMCSA §393.106 / NSC Standard 10 rules: aggregate working load limit ≥ 50%
+// of cargo weight, two tie-downs for the first 10 ft of article length plus
+// one per additional 10 ft (or fraction).
+type Securement struct {
+	CargoWeightLbs     int64    `json:"cargo_weight_lbs"`
+	MinAggregateWLLLbs int64    `json:"min_aggregate_wll_lbs"`
+	Straps             []Strap  `json:"straps"`
+	RecommendedStrap   string   `json:"recommended_strap"`
+	Notes              []string `json:"notes"`
 }

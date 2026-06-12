@@ -20,6 +20,7 @@ import (
 	"github.com/futurebuildai/ai-lm/internal/gable"
 	"github.com/futurebuildai/ai-lm/internal/load"
 	"github.com/futurebuildai/ai-lm/internal/routing"
+	"github.com/futurebuildai/ai-lm/internal/workflow"
 	"github.com/futurebuildai/ai-lm/pkg/database"
 	"github.com/futurebuildai/ai-lm/pkg/metrics"
 	"github.com/futurebuildai/ai-lm/pkg/middleware"
@@ -128,6 +129,10 @@ func main() {
 	// Compliance (pillar 2).
 	complianceSvc := compliance.NewService(compliance.NewRepository(db))
 	compliance.NewHandler(complianceSvc).RegisterRoutes(mux, writeGuard)
+
+	// Guided end-to-end workflow: ingest → analyze → assign → pack → review → push.
+	workflowSvc := workflow.NewService(workflow.NewRepository(db), gableClient, catalogSvc, fleetSvc, complianceSvc)
+	workflow.NewHandler(workflowSvc).RegisterRoutes(mux, writeGuard)
 
 	// Health — liveness.
 	mux.HandleFunc("GET /healthz/live", func(w http.ResponseWriter, r *http.Request) {

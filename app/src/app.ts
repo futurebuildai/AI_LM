@@ -44,9 +44,7 @@ export class AiLmApp extends LitElement {
 
   private _pathToTag(path: string): string {
     const tagMap: Record<string, string> = {
-      '/dispatch': 'ailm-dispatch-board',
-      '/load': 'ailm-yard-load-view',
-      '/load/:planId': 'ailm-yard-load-view',
+      '/plan': 'ailm-plan-workflow',
       '/fleet': 'ailm-fleet-profiles',
       '/compliance': 'ailm-compliance-points',
     };
@@ -80,7 +78,7 @@ export class AiLmApp extends LitElement {
           <div class="text-center">
             <h1 class="text-4xl font-bold font-mono mb-2">404</h1>
             <p class="text-zinc-400">Page not found</p>
-            <a href="/dispatch" class="text-gable-green hover:underline mt-4 inline-block">Go to Dispatch</a>
+            <a href="/plan" class="text-gable-green hover:underline mt-4 inline-block">Go to the Load Planner</a>
           </div>
         </div>
       `;

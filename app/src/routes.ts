@@ -1,22 +1,16 @@
 import type { RouteConfig } from './lib/router.ts';
 
 // Route table. Each page module self-registers a custom element on import.
+// The old separate Dispatch Board + Load Builder pages are merged into the
+// single guided /plan workflow; their paths redirect for old bookmarks.
 export const routes: RouteConfig[] = [
-  { path: '/', redirect: '/dispatch', layout: 'app' },
+  { path: '/', redirect: '/plan', layout: 'app' },
+  { path: '/dispatch', redirect: '/plan', layout: 'app' },
+  { path: '/load', redirect: '/plan', layout: 'app' },
   {
-    path: '/dispatch',
+    path: '/plan',
     layout: 'app',
-    load: () => import('./pages/DispatchBoard.ts'),
-  },
-  {
-    path: '/load/:planId',
-    layout: 'app',
-    load: () => import('./pages/YardLoadView.ts'),
-  },
-  {
-    path: '/load',
-    layout: 'app',
-    load: () => import('./pages/YardLoadView.ts'),
+    load: () => import('./pages/PlanWorkflow.ts'),
   },
   {
     path: '/fleet',

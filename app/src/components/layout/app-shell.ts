@@ -2,7 +2,7 @@ import { LitElement, html, nothing } from 'lit';
 import { customElement, state, property } from 'lit/decorators.js';
 import { router } from '../../lib/router.ts';
 import { icon } from '../../lib/icons.ts';
-import { Truck, Map, Boxes, ShieldAlert, ChevronLeft, ChevronRight } from 'lucide';
+import { Truck, Sparkles, ShieldAlert, ChevronLeft, ChevronRight } from 'lucide';
 
 // Self-contained ERP-style shell for AI_LM. Mirrors GableRun's gable-app-shell
 // look (Industrial Dark, collapsible sidebar) without its enterprise widgets.
@@ -58,8 +58,7 @@ export class AiLmAppShell extends LitElement {
             ${this._sidebarOpen
               ? html`<div class="mb-2 px-3 text-xs font-semibold text-zinc-500 uppercase tracking-wider">Operations</div>`
               : nothing}
-            ${this._navItem('/dispatch', Map, 'Dispatch')}
-            ${this._navItem('/load', Boxes, 'Load Builder')}
+            ${this._navItem('/plan', Sparkles, 'Load Planner')}
             ${this._sidebarOpen
               ? html`<div class="mb-2 mt-4 px-3 text-xs font-semibold text-zinc-500 uppercase tracking-wider">Configuration</div>`
               : nothing}

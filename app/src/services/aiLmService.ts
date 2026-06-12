@@ -116,6 +116,10 @@ export interface Placement {
   height_in: number;
   weight_lbs: number;
   axle_group: number;
+  // Sequenced (multi-stop) plans only:
+  order_id?: string;
+  stop_sequence?: number;
+  step?: number; // 1-based physical packing order
 }
 
 export interface AxleLoad {
@@ -124,6 +128,21 @@ export interface AxleLoad {
   max_weight_lbs: number;
   utilization: number;
   status: 'PASS' | 'WARN' | 'FAIL';
+}
+
+export interface Strap {
+  number: number;
+  position_in: number; // inches from the bed front
+  over_height_in: number;
+  required_wll_lbs: number;
+}
+
+export interface Securement {
+  cargo_weight_lbs: number;
+  min_aggregate_wll_lbs: number;
+  straps: Strap[];
+  recommended_strap: string;
+  notes: string[];
 }
 
 export interface LoadPlan {
@@ -137,6 +156,8 @@ export interface LoadPlan {
   balance_score: number;
   gvw_status: 'PASS' | 'WARN' | 'FAIL';
   unplaced: string[];
+  max_load_height_in?: number;
+  securement?: Securement;
   created_at: string;
 }
 
@@ -227,6 +248,99 @@ export interface RouteCheckResult {
   flags: ComplianceFlag[];
 }
 
+// ---- workflow (guided end-to-end dispatch) ------------------------------
+export interface AnalyzedLine {
+  product_id: string;
+  sku: string;
+  name?: string;
+  quantity: number;
+  unit_weight_lbs: number;
+  unit_length_in: number;
+  unit_width_in: number;
+  unit_height_in: number;
+  stackable: boolean;
+  has_geometry: boolean;
+  line_weight_lbs: number;
+  line_volume_cuft: number;
+}
+
+export interface OrderAnalysis {
+  order_id: string;
+  customer_name?: string;
+  address?: string;
+  lat?: number;
+  lng?: number;
+  lines: AnalyzedLine[];
+  total_weight_lbs: number;
+  total_volume_cuft: number;
+  max_length_in: number;
+  piece_count: number;
+  shape_profile: 'LONG_LOAD' | 'COMPACT' | 'MIXED';
+  routable: boolean;
+  issues: string[];
+}
+
+export interface WorkflowStop {
+  order_id: string;
+  sequence: number;
+  lat: number;
+  lng: number;
+  address?: string;
+  customer_name?: string;
+  weight_lbs: number;
+}
+
+export interface ComplianceAction {
+  type: 'REROUTE' | 'LOAD_ADJUST' | 'MANUAL_REVIEW';
+  description: string;
+  resolved: boolean;
+}
+
+export interface ComplianceReview {
+  status: 'PASS' | 'WARN' | 'FAIL';
+  flags: ComplianceFlag[];
+  actions: ComplianceAction[];
+  detours?: { lat: number; lng: number }[];
+  checked_gross_lbs: number;
+  checked_max_axle_lbs: number;
+  checked_height_in: number;
+}
+
+export interface TruckLoad {
+  vehicle_id: string;
+  vehicle_name: string;
+  driver_id?: string;
+  driver_name?: string;
+  capacity_weight_lbs: number;
+  stops: WorkflowStop[];
+  total_weight_lbs: number;
+  total_distance_mi: number;
+  total_duration_min: number;
+  bed?: { length_in: number; width_in: number; height_in: number };
+  load_plan?: LoadPlan;
+  compliance?: ComplianceReview;
+}
+
+export type WorkflowStatus = 'ANALYZED' | 'ASSIGNED' | 'PACKED' | 'REVIEWED' | 'PUSHED';
+
+export interface WorkflowPlan {
+  id: string;
+  plan_date: string;
+  status: WorkflowStatus;
+  depot_lat: number;
+  depot_lng: number;
+  orders: OrderAnalysis[];
+  loads: TruckLoad[];
+  unassigned_orders: WorkflowStop[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SeedResult {
+  date: string;
+  orders: { id: string; customer_name: string; address: string; lines: number; weight_lbs: number }[];
+}
+
 // ---- service singleton -------------------------------------------------
 class AiLmService {
   // fleet
@@ -292,6 +406,54 @@ class AiLmService {
     return fetchWithAuth(`${BASE}/compliance/restricted-points`, {
       method: 'POST',
       body: JSON.stringify(input),
+    }).then((r) => jsonOrThrow(r));
+  }
+
+  // workflow (guided end-to-end dispatch)
+  ingestWorkflow(date: string): Promise<WorkflowPlan> {
+    return fetchWithAuth(`${BASE}/workflow/plans`, {
+      method: 'POST',
+      body: JSON.stringify({ date }),
+    }).then((r) => jsonOrThrow(r));
+  }
+  latestWorkflow(date: string): Promise<WorkflowPlan> {
+    return fetchWithAuth(`${BASE}/workflow/plans/latest?date=${encodeURIComponent(date)}`).then(
+      (r) => jsonOrThrow(r),
+    );
+  }
+  getWorkflow(id: string): Promise<WorkflowPlan> {
+    return fetchWithAuth(`${BASE}/workflow/plans/${id}`).then((r) => jsonOrThrow(r));
+  }
+  assignWorkflow(id: string): Promise<WorkflowPlan> {
+    return fetchWithAuth(`${BASE}/workflow/plans/${id}/assign`, { method: 'POST' }).then((r) =>
+      jsonOrThrow(r),
+    );
+  }
+  packWorkflow(id: string): Promise<WorkflowPlan> {
+    return fetchWithAuth(`${BASE}/workflow/plans/${id}/pack`, { method: 'POST' }).then((r) =>
+      jsonOrThrow(r),
+    );
+  }
+  resequenceWorkflow(id: string, vehicleId: string, orderIds: string[]): Promise<WorkflowPlan> {
+    return fetchWithAuth(`${BASE}/workflow/plans/${id}/loads/${vehicleId}/sequence`, {
+      method: 'PUT',
+      body: JSON.stringify({ order_ids: orderIds }),
+    }).then((r) => jsonOrThrow(r));
+  }
+  reviewWorkflow(id: string): Promise<WorkflowPlan> {
+    return fetchWithAuth(`${BASE}/workflow/plans/${id}/review`, { method: 'POST' }).then((r) =>
+      jsonOrThrow(r),
+    );
+  }
+  pushWorkflow(id: string): Promise<WorkflowPlan> {
+    return fetchWithAuth(`${BASE}/workflow/plans/${id}/push`, { method: 'POST' }).then((r) =>
+      jsonOrThrow(r),
+    );
+  }
+  demoSeed(date?: string): Promise<SeedResult> {
+    return fetchWithAuth(`${BASE}/workflow/demo-seed`, {
+      method: 'POST',
+      body: JSON.stringify(date ? { date } : {}),
     }).then((r) => jsonOrThrow(r));
   }
 }

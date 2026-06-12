@@ -82,12 +82,13 @@ type OrderLine struct {
 
 // Order is a confirmed order with optional delivery geolocation.
 type Order struct {
-	ID        string      `json:"id"`
-	Status    string      `json:"status"`
-	Address   string      `json:"address,omitempty"`
-	Latitude  *float64    `json:"latitude,omitempty"`
-	Longitude *float64    `json:"longitude,omitempty"`
-	Lines     []OrderLine `json:"lines"`
+	ID           string      `json:"id"`
+	Status       string      `json:"status"`
+	CustomerName string      `json:"customer_name,omitempty"`
+	Address      string      `json:"address,omitempty"`
+	Latitude     *float64    `json:"latitude,omitempty"`
+	Longitude    *float64    `json:"longitude,omitempty"`
+	Lines        []OrderLine `json:"lines"`
 }
 
 // RouteStop is a single stop in an approved delivery route written back to LBM.
@@ -98,12 +99,30 @@ type RouteStop struct {
 	Lng      float64 `json:"lng"`
 }
 
-// DeliveryRoute is the write-back payload for an approved plan.
+// DeliveryRoute is the write-back payload for an approved plan. LoadManifest
+// carries the 3D packing manifest (pack steps per placement) that powers
+// GableLBM's yard "Pack Trucks" instructions; any JSON-marshalable value works.
 type DeliveryRoute struct {
 	VehicleID     string      `json:"vehicle_id"`
 	DriverID      string      `json:"driver_id,omitempty"`
 	ScheduledDate string      `json:"scheduled_date"` // YYYY-MM-DD
 	Stops         []RouteStop `json:"stops"`
+	LoadManifest  any         `json:"load_manifest,omitempty"`
+}
+
+// SeededOrder summarizes one order created by the demo seed.
+type SeededOrder struct {
+	ID           string  `json:"id"`
+	CustomerName string  `json:"customer_name"`
+	Address      string  `json:"address"`
+	Lines        int     `json:"lines"`
+	WeightLbs    float64 `json:"weight_lbs"`
+}
+
+// SeedResult is the demo-seed response.
+type SeedResult struct {
+	Date   string        `json:"date"`
+	Orders []SeededOrder `json:"orders"`
 }
 
 // --- Methods ---
@@ -153,6 +172,21 @@ func (c *Client) ListOrdersForDate(ctx context.Context, date string) ([]Order, e
 // upstream on (vehicle_id, scheduled_date).
 func (c *Client) PushDeliveryRoute(ctx context.Context, route DeliveryRoute) error {
 	return c.do(ctx, http.MethodPost, "/api/integration/delivery-routes", route, nil)
+}
+
+// SeedDemoOrders asks GableLBM to create demo next-day lumber orders (and stamp
+// realistic digital-twin dimensions on the lumber SKUs). date may be empty for
+// "tomorrow".
+func (c *Client) SeedDemoOrders(ctx context.Context, date string) (*SeedResult, error) {
+	body := map[string]string{}
+	if date != "" {
+		body["date"] = date
+	}
+	var out SeedResult
+	if err := c.do(ctx, http.MethodPost, "/api/integration/demo/seed-orders", body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
 }
 
 // do performs a JSON request against the integration API. body may be nil; out

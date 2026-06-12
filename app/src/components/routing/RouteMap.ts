@@ -17,6 +17,10 @@ export class RouteMap extends LitElement {
 
   @property({ attribute: false }) loads: Load[] = [];
   @property({ attribute: false }) flags: ComplianceFlag[] = [];
+  /** Depot/yard origin — when set, every route polyline starts here. */
+  @property({ attribute: false }) depot: { lat: number; lng: number } | null = null;
+  /** AI-inserted detour waypoints (from compliance auto-rerouting). */
+  @property({ attribute: false }) detours: { lat: number; lng: number }[] = [];
 
   private _map?: L.Map;
   private _layer?: L.LayerGroup;
@@ -27,7 +31,10 @@ export class RouteMap extends LitElement {
   }
 
   updated(changed: Map<string, unknown>) {
-    if ((changed.has('loads') || changed.has('flags')) && this._map) {
+    if (
+      (changed.has('loads') || changed.has('flags') || changed.has('depot') || changed.has('detours')) &&
+      this._map
+    ) {
       this._draw();
     }
   }
@@ -74,13 +81,31 @@ export class RouteMap extends LitElement {
 
     const all: L.LatLngExpression[] = [];
 
+    if (this.depot) {
+      const d = this.depot;
+      all.push([d.lat, d.lng]);
+      L.marker([d.lat, d.lng], {
+        icon: L.divIcon({
+          className: 'ailm-depot-marker',
+          html: `<div style="background:#161821;color:#00FFA3;width:30px;height:30px;border-radius:6px;display:flex;align-items:center;justify-content:center;font-family:'JetBrains Mono',monospace;font-weight:700;font-size:13px;border:2px solid #00FFA3;box-shadow:0 0 12px #00FFA380">Y</div>`,
+          iconSize: [30, 30],
+          iconAnchor: [15, 15],
+        }),
+      })
+        .bindPopup('<b>Yard / Depot</b>')
+        .addTo(this._layer!);
+    }
+
     this.loads.forEach((load, li) => {
       const color = LOAD_COLORS[li % LOAD_COLORS.length];
       const latlngs: L.LatLngExpression[] = load.stops.map((s) => [s.lat, s.lng]);
       all.push(...latlngs);
 
-      if (latlngs.length > 1) {
-        L.polyline(latlngs, { color, weight: 3, opacity: 0.7, dashArray: '6 6' }).addTo(this._layer!);
+      const path: L.LatLngExpression[] = this.depot
+        ? [[this.depot.lat, this.depot.lng], ...latlngs]
+        : latlngs;
+      if (path.length > 1) {
+        L.polyline(path, { color, weight: 3, opacity: 0.7, dashArray: '6 6' }).addTo(this._layer!);
       }
 
       load.stops.forEach((s) => {
@@ -95,6 +120,20 @@ export class RouteMap extends LitElement {
     this.flags.forEach((f) => {
       L.marker([f.point.lat, f.point.lng], { icon: this._flagIcon(f.severity) })
         .bindPopup(`<b>${f.point.name}</b><br/>${f.violation}<br/><i>${f.severity}</i>`)
+        .addTo(this._layer!);
+    });
+
+    this.detours.forEach((d) => {
+      all.push([d.lat, d.lng]);
+      L.circleMarker([d.lat, d.lng], {
+        radius: 8,
+        color: '#38BDF8',
+        weight: 2,
+        dashArray: '3 3',
+        fillColor: '#38BDF8',
+        fillOpacity: 0.25,
+      })
+        .bindPopup('<b>AI detour waypoint</b><br/>Inserted to route around a restriction')
         .addTo(this._layer!);
     });
 

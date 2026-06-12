@@ -85,15 +85,15 @@ func main() {
 			Lat:               49.8845,
 			Lng:               -119.4960,
 			RestrictionType:   "WEIGHT",
-			MaxGrossWeightLbs: i64(63500),
-			Notes:             "Floating bridge — monitor gross weight during peak load.",
+			MaxGrossWeightLbs: i64(21000), // demo-calibrated: a loaded flatbed trips this
+			Notes:             "Floating bridge — temporary gross-weight restriction during deck repair.",
 		},
 		{
 			Name:            "Highway 97 CN Overpass",
 			Lat:             49.8612,
 			Lng:             -119.4490,
 			RestrictionType: "HEIGHT",
-			MaxHeightIn:     f64(162), // 13'6"
+			MaxHeightIn:     f64(136), // 11'4" — demo-calibrated: tall lumber tiers trip this
 			Notes:           "Low clearance overpass.",
 		},
 		{
