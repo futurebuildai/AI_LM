@@ -14,8 +14,28 @@ web console.
 
 | Spec | Branch | DO App | App ID | URL | Logical DB |
 |---|---|---|---|---|---|
-| `.do/app-staging.yaml` | `main` | **`ai-lm-staging`** | `8a274c57-dee2-4053-ac3c-40fe2528ca9e` | https://ai-lm-staging-b6ssv.ondigitalocean.app | `ai_lm_staging` |
+| `.do/app-staging.yaml` | `main` | **`ai-lm-staging`** | `8a274c57-dee2-4053-ac3c-40fe2528ca9e` | **https://load.gablelbm.com** (+ https://ai-lm-staging-b6ssv.ondigitalocean.app) | `ai_lm_staging` |
 | `.do/app-demo.yaml` | `community` | *(not created)* | — | (intended `demo.ai-lm.gable.com`) | `ai_lm_demo` |
+
+> **Custom domain:** `load.gablelbm.com` is declared in `app-staging.yaml`
+> (`domains:` block). gablelbm.com's DNS zone is **not** in this DO account, so the
+> DNS provider needs `CNAME load.gablelbm.com → ai-lm-staging-b6ssv.ondigitalocean.app`;
+> App Platform provisions the TLS cert once the record resolves. Check status with
+> `doctl apps get 8a274c57-dee2-4053-ac3c-40fe2528ca9e --output json | jq '.[0].domains'`.
+>
+> **Functional dependency:** the guided workflow needs GableLBM `community` to carry
+> the AI_LM dispatch support (migration 075, scheduled-date orders, demo seed,
+> manifest storage, yard Pack Trucks) — see
+> https://github.com/futurebuildai/GableLBM-main/pull/16. Until that merges, ingest
+> matches orders by creation date only, the demo-seed button 404s, and pushed routes
+> carry no packing manifest.
+>
+> **Known issue (2026-06-12):** ingest against demo.gablelbm.com returns
+> `401 invalid integration key` — `GABLE_INTEGRATION_KEY` (ai-lm-staging) does not
+> match `INTEGRATION_API_KEY` (gablelbm-demo). Both are encrypted DO secrets, so the
+> fix needs someone holding the value: either paste gablelbm-demo's key into
+> ai-lm-staging, or rotate BOTH to a fresh shared value (coordinate with FB Brain,
+> which uses the same GableLBM key).
 
 > **Important reality check:** `ai-lm-staging` (tracking **`main`**) is the **only live
 > AI_LM environment**. `app-demo.yaml` targets a `community` branch and a `demo.ai-lm.gable.com`
