@@ -299,7 +299,7 @@ export class Load3DVisualizer extends LitElement {
       this._placed.push({ mesh, edges, step: p.step ?? 0, mat, edgeMat });
     });
 
-    this._buildStraps(offX, offZ, bed);
+    this._buildStraps(offX, bed);
     this._applyVisibility();
   }
 
@@ -308,7 +308,7 @@ export class Load3DVisualizer extends LitElement {
    * load with drops down both sides at each strap position. Shown only when
    * the full load is visible (straps go on after packing).
    */
-  private _buildStraps(offX: number, offZ: number, bed: BedDims) {
+  private _buildStraps(offX: number, bed: BedDims) {
     this._strapGroup = undefined;
     const straps = this.plan?.securement?.straps ?? [];
     if (straps.length === 0 || !this._scene) return;
