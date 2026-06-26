@@ -70,10 +70,21 @@ func Load() (*Config, error) {
 		if _, explicit := os.LookupEnv("DATABASE_URL"); !explicit {
 			return nil, fmt.Errorf("FATAL: DATABASE_URL must be explicitly set when AUTH_MODE != 'dev' (refusing to fall back to localhost)")
 		}
-		if !strings.Contains(cfg.DatabaseURL, "sslmode=require") &&
+		// DigitalOcean managed-DB bindings (${db.DATABASE_URL}) connect over TLS
+		// but omit an explicit sslmode query param. Rather than fail closed,
+		// enforce it by appending sslmode=require when no sslmode is present.
+		// If an sslmode IS present but is insecure, that's a deliberate
+		// misconfiguration and we still refuse.
+		if !strings.Contains(cfg.DatabaseURL, "sslmode=") {
+			sep := "?"
+			if strings.Contains(cfg.DatabaseURL, "?") {
+				sep = "&"
+			}
+			cfg.DatabaseURL += sep + "sslmode=require"
+		} else if !strings.Contains(cfg.DatabaseURL, "sslmode=require") &&
 			!strings.Contains(cfg.DatabaseURL, "sslmode=verify-full") &&
 			!strings.Contains(cfg.DatabaseURL, "sslmode=verify-ca") {
-			return nil, fmt.Errorf("FATAL: DATABASE_URL must include sslmode=require or sslmode=verify-full when AUTH_MODE != 'dev'")
+			return nil, fmt.Errorf("FATAL: DATABASE_URL has an insecure sslmode; require/verify-full/verify-ca needed when AUTH_MODE != 'dev'")
 		}
 		// AI_LM now mints its own staff session tokens (internal/auth), so
 		// SESSION_SECRET is the required verifier in production. JWKS_URL is
