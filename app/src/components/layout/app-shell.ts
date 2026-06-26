@@ -2,7 +2,7 @@ import { LitElement, html, nothing } from 'lit';
 import { customElement, state, property } from 'lit/decorators.js';
 import { router } from '../../lib/router.ts';
 import { icon } from '../../lib/icons.ts';
-import { Truck, Sparkles, ShieldAlert, ChevronLeft, ChevronRight } from 'lucide';
+import { Truck, Sparkles, ShieldAlert, ChevronLeft, ChevronRight, LogOut } from 'lucide';
 
 // Self-contained ERP-style shell for AI_LM. Mirrors GableRun's gable-app-shell
 // look (Industrial Dark, collapsible sidebar) without its enterprise widgets.
@@ -23,6 +23,20 @@ export class AiLmAppShell extends LitElement {
     router.removeEventListener('route-changed', this._boundRouteChanged);
   }
 
+  // Clear the AI_LM session and return to the standalone login page.
+  private _signOut() {
+    localStorage.removeItem('token');
+    localStorage.removeItem('ailm_name');
+    window.location.href = '/login';
+  }
+
+  private _initials(name: string): string {
+    const parts = name.trim().split(/\s+/).filter(Boolean);
+    if (parts.length === 0) return 'AD';
+    if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+    return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+  }
+
   private _navItem(to: string, iconData: Parameters<typeof icon>[0], label: string) {
     const path = router.currentPath;
     const active = path === to || path.startsWith(to + '/');
@@ -39,6 +53,7 @@ export class AiLmAppShell extends LitElement {
 
   render() {
     const w = this._sidebarOpen ? 280 : 80;
+    const name = localStorage.getItem('ailm_name') || '';
     return html`
       <div class="min-h-screen bg-deep-space text-foreground flex overflow-hidden font-sans selection:bg-gable-green/30">
         <aside
@@ -82,10 +97,21 @@ export class AiLmAppShell extends LitElement {
           <header class="h-16 border-b border-white/5 bg-deep-space/80 backdrop-blur-xl px-6 flex items-center justify-between sticky top-0 z-40">
             <div class="text-sm text-zinc-400 font-medium">AI Load Management &amp; Compliance</div>
             <div class="flex items-center gap-3">
-              <span class="text-xs text-zinc-500 font-mono bg-white/5 px-2 py-1 rounded border border-white/5">dev</span>
+              ${name
+                ? html`<span class="hidden sm:inline text-xs text-zinc-400 font-medium">${name}</span>`
+                : nothing}
               <div class="h-9 w-9 rounded-full bg-gradient-to-br from-gable-green/20 to-emerald-500/20 border border-gable-green/30 flex items-center justify-center text-xs font-mono font-bold text-gable-green shadow-glow">
-                AD
+                ${this._initials(name)}
               </div>
+              <button
+                @click=${this._signOut}
+                title="Sign out"
+                aria-label="Sign out"
+                class="flex items-center gap-1.5 text-xs text-zinc-400 hover:text-safety-red border border-white/10 hover:border-safety-red/40 rounded-lg px-2.5 py-1.5 transition-all"
+              >
+                ${icon(LogOut, 16)}
+                <span class="hidden sm:inline">Sign out</span>
+              </button>
             </div>
           </header>
 

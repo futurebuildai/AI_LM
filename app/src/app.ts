@@ -44,6 +44,7 @@ export class AiLmApp extends LitElement {
 
   private _pathToTag(path: string): string {
     const tagMap: Record<string, string> = {
+      '/login': 'ailm-login',
       '/plan': 'ailm-plan-workflow',
       '/fleet': 'ailm-fleet-profiles',
       '/compliance': 'ailm-compliance-points',

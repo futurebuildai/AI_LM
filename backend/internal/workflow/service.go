@@ -33,7 +33,6 @@ type gableSource interface {
 	ListVehicles(ctx context.Context) ([]gable.Vehicle, error)
 	ListDrivers(ctx context.Context) ([]gable.Driver, error)
 	PushDeliveryRoute(ctx context.Context, route gable.DeliveryRoute) error
-	SeedDemoOrders(ctx context.Context, date string) (*gable.SeedResult, error)
 }
 
 // catalogSource resolves products to effective geometry (satisfied by *catalog.Service).
@@ -73,12 +72,6 @@ func (s *Service) Get(ctx context.Context, id string) (*Plan, error) {
 // GetLatestForDate returns the most recent plan for a date.
 func (s *Service) GetLatestForDate(ctx context.Context, date string) (*Plan, error) {
 	return s.repo.GetLatestForDate(ctx, date)
-}
-
-// DemoSeed proxies to GableLBM's demo-seed endpoint (next-day lumber orders +
-// digital-twin dims for the lumber SKUs).
-func (s *Service) DemoSeed(ctx context.Context, date string) (*gable.SeedResult, error) {
-	return s.gable.SeedDemoOrders(ctx, date)
 }
 
 // --- Step 1+2: ingest + deep analysis ---------------------------------------

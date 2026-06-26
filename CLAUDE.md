@@ -136,9 +136,11 @@ GableLBM (source of truth)            AI_LM
 | PUT    | `/workflow/plans/{id}/loads/{vehicleId}/sequence` | workflow (manual stop reorder → re-pack) |
 | POST   | `/workflow/plans/{id}/review`           | workflow (step 5: restricted-point check + AI reroute/load-adjust) |
 | POST   | `/workflow/plans/{id}/push`             | workflow (step 6: routes + packing manifests → GableLBM) |
-| POST   | `/workflow/demo-seed`                   | workflow (proxies GableLBM demo order seeding) |
+| POST   | `/auth/login`                           | auth (**public**: staff email → GableLBM `validate-staff` → AI_LM session JWT) |
 
 Write routes are gated by `middleware.RequireRole("admin","owner","dispatcher","yard")`.
+`/auth/login` is public (registered as a public path on the auth middleware) — it is
+how a staff session is obtained. Session tokens are HMAC-signed with `SESSION_SECRET`.
 
 ## Digital-Twin Geometry Resolution
 
@@ -197,9 +199,10 @@ See `INTEGRATIONS.md` for the consumer contract and `ARCHITECTURE.md` for the mo
   five-step guided workflow (Ingest & Analyze → Assign Trucks → Pack Loads →
   Route Review → Manifest & Push) that replaced the old separate Dispatch Board
   and Load Builder pages (`/dispatch` and `/load` redirect to it). It includes
-  the demo-seed button, per-truck 3D packing with wood-tone bundle twins and a
-  packing-step playback slider, stop resequencing, the AI compliance-resolution
-  log, and the final push to GableLBM.
+  per-truck 3D packing with wood-tone bundle twins and a packing-step playback
+  slider, stop resequencing, the AI compliance-resolution log, and the final
+  push to GableLBM. Orders come solely from real GableLBM data (date picker +
+  ingest); there is no demo-seed scaffolding.
 - `<ailm-load-3d-visualizer>` supports `colorMode="wood"` (realistic lumber
   twins, per-stop edge accents) and `visibleSteps` for pack-order playback.
 - All custom elements use the `ailm-` prefix.
@@ -269,10 +272,10 @@ AI_LM consumes these GableLBM endpoints (all `X-Integration-Key` gated; base URL
   optional `load_manifest` JSON — the 3D packing manifest that powers GableLBM's
   yard **Pack Trucks** step-by-step loading surface).
   Idempotent on `(vehicle_id, scheduled_date)`.
-- `POST /api/integration/demo/seed-orders`       → demo seeding: creates next-day
-  CONFIRMED lumber orders (with delivery geopoints) and stamps realistic
-  actual-size dimensions on the lumber SKUs so digital twins render true to scale.
-  Optional `{date}`; re-seeding a date replaces its previously seeded orders.
+- `POST /api/integration/validate-staff`         → staff login entitlement check.
+  Request `{email}`; response `{staff_id, email, name, entitled, roles[], modules[]}`.
+  Called by `gable.Client.ValidateStaff` from `POST /api/v1/auth/login`; when
+  `entitled` is true AI_LM mints its own session JWT (it never stores credentials).
 
 A different ERP can satisfy this contract to reuse AI_LM unchanged.
 
@@ -296,8 +299,8 @@ A different ERP can satisfy this contract to reuse AI_LM unchanged.
   Builder): date ingest with per-order deep analysis, sweep-CVRP truck
   assignment, LIFO **tier** packing (last stop bottom, first stop on top, every
   board an individual placement with a pack `step`), restricted-point review
-  with automatic reroute/load-adjust, manifest push to GableLBM (dispatch board
-  + yard Pack Trucks), and the demo-seed button. Items #3 and #5 of the list
+  with automatic reroute/load-adjust, and manifest push to GableLBM (dispatch
+  board + yard Pack Trucks). Items #3 and #5 of the list
   below are largely superseded by this (order-driven packing exists; stacking
   is handled by per-SKU banded bundles).
 

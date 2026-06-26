@@ -336,9 +336,11 @@ export interface WorkflowPlan {
   updated_at: string;
 }
 
-export interface SeedResult {
-  date: string;
-  orders: { id: string; customer_name: string; address: string; lines: number; weight_lbs: number }[];
+// ---- auth (staff login) ------------------------------------------------
+export interface LoginResponse {
+  token: string;
+  name: string;
+  roles: string[];
 }
 
 // ---- service singleton -------------------------------------------------
@@ -450,10 +452,11 @@ class AiLmService {
       jsonOrThrow(r),
     );
   }
-  demoSeed(date?: string): Promise<SeedResult> {
-    return fetchWithAuth(`${BASE}/workflow/demo-seed`, {
+  // auth (staff login backed by GableLBM validate-staff)
+  login(email: string): Promise<LoginResponse> {
+    return fetchWithAuth(`${BASE}/auth/login`, {
       method: 'POST',
-      body: JSON.stringify(date ? { date } : {}),
+      body: JSON.stringify({ email }),
     }).then((r) => jsonOrThrow(r));
   }
 }

@@ -110,19 +110,16 @@ type DeliveryRoute struct {
 	LoadManifest  any         `json:"load_manifest,omitempty"`
 }
 
-// SeededOrder summarizes one order created by the demo seed.
-type SeededOrder struct {
-	ID           string  `json:"id"`
-	CustomerName string  `json:"customer_name"`
-	Address      string  `json:"address"`
-	Lines        int     `json:"lines"`
-	WeightLbs    float64 `json:"weight_lbs"`
-}
-
-// SeedResult is the demo-seed response.
-type SeedResult struct {
-	Date   string        `json:"date"`
-	Orders []SeededOrder `json:"orders"`
+// StaffValidation is the GableLBM /api/integration/validate-staff response. It
+// reports whether a staff member's email is entitled to use AI_LM and carries
+// the role/module grants that authorize the AI_LM session.
+type StaffValidation struct {
+	StaffID  string   `json:"staff_id"`
+	Email    string   `json:"email"`
+	Name     string   `json:"name"`
+	Entitled bool     `json:"entitled"`
+	Roles    []string `json:"roles"`
+	Modules  []string `json:"modules"`
 }
 
 // --- Methods ---
@@ -174,16 +171,13 @@ func (c *Client) PushDeliveryRoute(ctx context.Context, route DeliveryRoute) err
 	return c.do(ctx, http.MethodPost, "/api/integration/delivery-routes", route, nil)
 }
 
-// SeedDemoOrders asks GableLBM to create demo next-day lumber orders (and stamp
-// realistic digital-twin dimensions on the lumber SKUs). date may be empty for
-// "tomorrow".
-func (c *Client) SeedDemoOrders(ctx context.Context, date string) (*SeedResult, error) {
-	body := map[string]string{}
-	if date != "" {
-		body["date"] = date
-	}
-	var out SeedResult
-	if err := c.do(ctx, http.MethodPost, "/api/integration/demo/seed-orders", body, &out); err != nil {
+// ValidateStaff asks GableLBM whether the given staff email is entitled to use
+// AI_LM, returning the staff identity plus role/module grants. Sent with the
+// X-Integration-Key header like every other integration call.
+func (c *Client) ValidateStaff(ctx context.Context, email string) (*StaffValidation, error) {
+	body := map[string]string{"email": email}
+	var out StaffValidation
+	if err := c.do(ctx, http.MethodPost, "/api/integration/validate-staff", body, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil

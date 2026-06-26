@@ -14,16 +14,21 @@ import (
 )
 
 type AuthConfig struct {
-	JWKSURL     string
-	Issuer      string
-	PublicPaths []string
+	JWKSURL string
+	Issuer  string
+	// SessionSecret is the HMAC secret AI_LM signs its own staff session tokens
+	// with (internal/auth). When set, the middleware accepts HS256 tokens signed
+	// with it in addition to / instead of externally-issued (JWKS) tokens.
+	SessionSecret string
+	PublicPaths   []string
 }
 
 type AuthMiddleware struct {
-	jwks        keyfunc.Keyfunc
-	issuer      string
-	publicPaths []string
-	logger      *slog.Logger
+	jwks          keyfunc.Keyfunc // nil when only session-secret auth is configured
+	sessionSecret []byte          // empty when only JWKS auth is configured
+	issuer        string
+	publicPaths   []string
+	logger        *slog.Logger
 }
 
 // UserClaims holds standard OIDC claims plus the role fields AI_LM authorizes on.
@@ -41,21 +46,50 @@ type contextKey string
 
 const UserContextKey contextKey = "user"
 
-// NewAuthMiddleware initializes the JWKS fetcher and returns the middleware.
+// NewAuthMiddleware initializes the token verifiers and returns the middleware.
+// At least one of JWKSURL or SessionSecret must be supplied. When JWKSURL is
+// set it fetches the keys immediately (cached, auto-refreshed). When
+// SessionSecret is set the middleware additionally verifies AI_LM-issued HS256
+// session tokens.
 func NewAuthMiddleware(ctx context.Context, cfg AuthConfig, logger *slog.Logger) (*AuthMiddleware, error) {
-	// Create the JWKS from the URL. This fetches keys immediately, caches them,
-	// and refreshes automatically based on Cache-Control headers.
-	k, err := keyfunc.NewDefault([]string{cfg.JWKSURL})
-	if err != nil {
-		return nil, fmt.Errorf("failed to create JWKS from URL %s: %w", cfg.JWKSURL, err)
+	if cfg.JWKSURL == "" && cfg.SessionSecret == "" {
+		return nil, fmt.Errorf("auth middleware requires JWKS_URL or SESSION_SECRET")
+	}
+
+	var k keyfunc.Keyfunc
+	if cfg.JWKSURL != "" {
+		var err error
+		k, err = keyfunc.NewDefault([]string{cfg.JWKSURL})
+		if err != nil {
+			return nil, fmt.Errorf("failed to create JWKS from URL %s: %w", cfg.JWKSURL, err)
+		}
 	}
 
 	return &AuthMiddleware{
-		jwks:        k,
-		issuer:      cfg.Issuer,
-		publicPaths: cfg.PublicPaths,
-		logger:      logger,
+		jwks:          k,
+		sessionSecret: []byte(cfg.SessionSecret),
+		issuer:        cfg.Issuer,
+		publicPaths:   cfg.PublicPaths,
+		logger:        logger,
 	}, nil
+}
+
+// keyFunc resolves the verification key by signing method: HS256 tokens are
+// AI_LM session tokens (verified with the session secret); everything else is
+// an externally-issued token verified against the JWKS. Selecting the key by
+// algorithm prevents alg-confusion (an HMAC token can never be verified with a
+// JWKS public key, or vice versa).
+func (m *AuthMiddleware) keyFunc(token *jwt.Token) (interface{}, error) {
+	if _, ok := token.Method.(*jwt.SigningMethodHMAC); ok {
+		if len(m.sessionSecret) == 0 {
+			return nil, fmt.Errorf("HMAC token rejected: no session secret configured")
+		}
+		return m.sessionSecret, nil
+	}
+	if m.jwks == nil {
+		return nil, fmt.Errorf("asymmetric token rejected: no JWKS configured")
+	}
+	return m.jwks.Keyfunc(token)
 }
 
 // Handler is the actual middleware function.
@@ -91,8 +125,10 @@ func (m *AuthMiddleware) Handler(next http.Handler) http.Handler {
 		}
 		tokenString := parts[1]
 
-		// 2. Parse and Validate Token
-		token, err := jwt.ParseWithClaims(tokenString, &UserClaims{}, m.jwks.Keyfunc)
+		// 2. Parse and Validate Token. Allowed algorithms are constrained so a
+		// "none"-signed or otherwise unexpected token is rejected outright.
+		token, err := jwt.ParseWithClaims(tokenString, &UserClaims{}, m.keyFunc,
+			jwt.WithValidMethods([]string{"HS256", "RS256", "RS384", "RS512", "ES256", "ES384", "ES512"}))
 		if err != nil {
 			m.logger.Warn("Token validation failed", "error", err, "path", r.URL.Path)
 			httputil.RespondError(w, r, "Unauthorized: Invalid token", http.StatusUnauthorized, nil)
@@ -113,11 +149,16 @@ func (m *AuthMiddleware) Handler(next http.Handler) http.Handler {
 			return
 		}
 
-		// Optional: verify issuer strictly if configured.
-		if m.issuer != "" && claims.Issuer != m.issuer {
-			m.logger.Warn("Token issuer mismatch", "expected", m.issuer, "got", claims.Issuer)
-			httputil.RespondError(w, r, "Unauthorized: Invalid issuer", http.StatusUnauthorized, nil)
-			return
+		// Optional: verify issuer strictly if configured. Only applied to
+		// externally-issued (asymmetric) tokens; AI_LM-issued HMAC session
+		// tokens are already trusted via the session secret and carry their own
+		// fixed issuer.
+		if _, isHMAC := token.Method.(*jwt.SigningMethodHMAC); !isHMAC {
+			if m.issuer != "" && claims.Issuer != m.issuer {
+				m.logger.Warn("Token issuer mismatch", "expected", m.issuer, "got", claims.Issuer)
+				httputil.RespondError(w, r, "Unauthorized: Invalid issuer", http.StatusUnauthorized, nil)
+				return
+			}
 		}
 
 		// 4. Inject into Context

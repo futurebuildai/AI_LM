@@ -38,6 +38,7 @@ client is `internal/gable.Client`; config resolution is in `internal/config/conf
 | `GET` | `/api/integration/drivers` | `internal/routing` | Driver assignment for route write-back |
 | `GET` | `/api/integration/orders` | `internal/catalog` / routing | Orders + line items + delivery geo |
 | `POST` | `/api/integration/delivery-routes` | `internal/routing` (approve) | Write-back of an approved route plan |
+| `POST` | `/api/integration/validate-staff` | `gable.Client.ValidateStaff` | Staff login entitlement check (pillar 4) |
 
 > GableLBM also exposes quote endpoints (`bulk-price`, `quotes`, `accept-and-convert`) on
 > the same `/api/integration/*` prefix; AI_LM does **not** consume those today.
@@ -109,14 +110,25 @@ AI_LM posts an approved plan back:
 Idempotent on `(vehicle_id, scheduled_date)` — re-approving a plan overwrites rather than
 duplicates.
 
+### `POST /api/integration/validate-staff` — staff login
+
+Called by `gable.Client.ValidateStaff` from AI_LM's `POST /api/v1/auth/login`. Request
+`{ "email": "<staff email>" }`; response
+`{ staff_id, email, name, entitled, roles[], modules[] }`. When `entitled` is `true`, AI_LM
+mints its **own** session JWT (HMAC-signed with `SESSION_SECRET`, claims `sub=staff_id`,
+`email`, `name`, `roles`) — GableLBM stays the identity source of truth and AI_LM never
+stores credentials. `entitled=false` → `403 not authorized for AI_LM`.
+
 ---
 
 ## 2. Inbound surface AI_LM serves (`/api/v1/*`)
 
 AI_LM's own Lit UI is the only consumer of its `/api/v1/*` API (fleet, catalog, load,
-routing, compliance). Authenticated by JWKS-verified JWT via `pkg/middleware`;
-`AUTH_MODE=dev` bypasses it on local/staging (share GableLBM's `JWKS_URL` for a real auth
-path). Write routes additionally require
+routing, compliance, auth). Staff obtain a session via the public `POST /api/v1/auth/login`
+(see `validate-staff` above); `pkg/middleware` then authenticates each request by verifying
+the AI_LM-issued **HMAC session JWT** with `SESSION_SECRET` (and/or an externally-issued
+token via `JWKS_URL`). `AUTH_MODE=dev` bypasses auth on local/staging. Write routes
+additionally require
 `RequireRole("admin","owner","dispatcher","yard")`. This is not a third-party surface — it
 is documented here only to complete the picture. Full route table is in `CLAUDE.md`.
 
@@ -136,7 +148,8 @@ ERP-specific knowledge is confined to `internal/gable`, and everything downstrea
 | Surface | Mechanism | Where |
 |---|---|---|
 | Outbound → GableLBM `/api/integration/*` | `X-Integration-Key` == GableLBM `INTEGRATION_API_KEY` | `internal/gable/client.go`, `GABLE_INTEGRATION_KEY` env |
-| Inbound `/api/v1/*` | JWKS-verified JWT (`AUTH_MODE=dev` bypass on staging) | `pkg/middleware`, `JWKS_URL` env |
+| Staff login | email → GableLBM `validate-staff` → AI_LM HMAC session JWT | `internal/auth`, `SESSION_SECRET` env |
+| Inbound `/api/v1/*` | AI_LM HMAC session JWT (and/or JWKS JWT); `AUTH_MODE=dev` bypass on staging | `pkg/middleware`, `SESSION_SECRET` / `JWKS_URL` env |
 
 ## Config
 
@@ -144,7 +157,8 @@ ERP-specific knowledge is confined to `internal/gable`, and everything downstrea
 |---|---|---|
 | `GABLE_API_URL` | GableLBM base URL (e.g. `https://demo.gablelbm.com`) | no |
 | `GABLE_INTEGRATION_KEY` | `X-Integration-Key` value; must equal GableLBM's `INTEGRATION_API_KEY` | **yes** |
-| `JWKS_URL` | JWKS for inbound JWT verification (omit when `AUTH_MODE=dev`) | no |
+| `SESSION_SECRET` | HMAC secret signing/verifying AI_LM staff session JWTs (required when `AUTH_MODE != dev`) | **yes** |
+| `JWKS_URL` | JWKS for additional externally-issued JWT verification (optional) | no |
 | `AUTH_MODE` | `dev` bypasses inbound auth on staging | no |
 
 See `DEVOPS.md` for how these are set on the `ai-lm-staging` DO app.

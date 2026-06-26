@@ -8,6 +8,12 @@ export const routes: RouteConfig[] = [
   { path: '/dispatch', redirect: '/plan', layout: 'app' },
   { path: '/load', redirect: '/plan', layout: 'app' },
   {
+    // Standalone staff login — no app-shell layout.
+    path: '/login',
+    layout: 'none',
+    load: () => import('./pages/Login.ts'),
+  },
+  {
     path: '/plan',
     layout: 'app',
     load: () => import('./pages/PlanWorkflow.ts'),

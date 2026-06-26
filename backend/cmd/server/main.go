@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/futurebuildai/ai-lm/internal/auth"
 	"github.com/futurebuildai/ai-lm/internal/catalog"
 	"github.com/futurebuildai/ai-lm/internal/compliance"
 	"github.com/futurebuildai/ai-lm/internal/config"
@@ -80,25 +81,25 @@ func main() {
 	metrics.StartDBPoolCollector(metricsCtx, db.Pool, 15*time.Second)
 	logger.Info("Prometheus metrics initialized")
 
-	// 4. Auth middleware — fail-closed: JWKS_URL required unless AUTH_MODE=dev.
+	// 4. Auth middleware — fail-closed: a token verifier (SESSION_SECRET and/or
+	// JWKS_URL) is required unless AUTH_MODE=dev. /api/v1/auth/login is public so
+	// staff can obtain a session before they hold a token.
 	var authMw *middleware.AuthMiddleware
-	if cfg.JWKSURL != "" {
-		logger.Info("Initializing Auth Middleware", "jwks_url", cfg.JWKSURL)
+	if strings.EqualFold(cfg.AuthMode, "dev") {
+		logger.Warn("AUTH_MODE=dev: authentication disabled (development only)")
+	} else {
+		logger.Info("Initializing Auth Middleware", "jwks_url", cfg.JWKSURL, "session_tokens", cfg.SessionSecret != "")
 		am, err := middleware.NewAuthMiddleware(context.Background(), middleware.AuthConfig{
-			JWKSURL:     cfg.JWKSURL,
-			Issuer:      cfg.AuthIssuer,
-			PublicPaths: []string{"/health", "/healthz/live", "/healthz/ready", "/metrics"},
+			JWKSURL:       cfg.JWKSURL,
+			Issuer:        cfg.AuthIssuer,
+			SessionSecret: cfg.SessionSecret,
+			PublicPaths:   []string{"/health", "/healthz/live", "/healthz/ready", "/metrics", "/api/v1/auth/login"},
 		}, logger)
 		if err != nil {
 			logger.Error("Failed to initialize Auth Middleware", "error", err)
 			os.Exit(1)
 		}
 		authMw = am
-	} else if strings.EqualFold(cfg.AuthMode, "dev") {
-		logger.Warn("AUTH_MODE=dev: authentication disabled (development only)")
-	} else {
-		logger.Error("JWKS_URL not set and AUTH_MODE != dev; set JWKS_URL for production or AUTH_MODE=dev for development")
-		os.Exit(1)
 	}
 
 	// 5. GableLBM integration client.
@@ -109,6 +110,11 @@ func main() {
 	mux := http.NewServeMux()
 
 	writeGuard := middleware.RequireRole("admin", "owner", "dispatcher", "yard")
+
+	// Staff auth (pillar 4): public login backed by GableLBM validate-staff;
+	// mints AI_LM session tokens. Registered without the writeGuard.
+	authSvc := auth.NewService(gableClient, cfg.SessionSecret)
+	auth.NewHandler(authSvc).RegisterRoutes(mux)
 
 	// Fleet (vehicle profiles).
 	fleetSvc := fleet.NewService(fleet.NewRepository(db))

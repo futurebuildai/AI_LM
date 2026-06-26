@@ -128,13 +128,6 @@ export class PlanWorkflow extends LitElement {
 
   // --- actions ---------------------------------------------------------------
 
-  private _seed() {
-    this._run('seed', () => aiLmService.demoSeed(this._date), (res) => {
-      this._notice = `Seeded ${res.orders.length} demo lumber orders in GableLBM for ${res.date} (digital twins stamped on all lumber SKUs).`;
-      this._date = res.date;
-    });
-  }
-
   private _ingest() {
     this._run('ingest', () => aiLmService.ingestWorkflow(this._date), (p) => this._setPlan(p));
   }
@@ -310,15 +303,6 @@ export class PlanWorkflow extends LitElement {
           >
             ${icon(ClipboardList, 18)} ${this._busy === 'ingest' ? 'Analyzing…' : p ? 'Re-ingest orders' : 'Ingest orders'}
           </button>
-          <div class="flex-1"></div>
-          <button
-            @click=${this._seed}
-            ?disabled=${this._busy !== ''}
-            class="flex items-center gap-2 border border-blueprint-blue/40 text-blueprint-blue font-semibold px-4 py-2 rounded-lg hover:bg-blueprint-blue/10 transition-all disabled:opacity-50"
-            title="Creates demo lumber orders in GableLBM for this date and stamps realistic digital-twin dimensions on the lumber catalog"
-          >
-            ${icon(Sparkles, 18)} ${this._busy === 'seed' ? 'Seeding…' : 'Seed demo orders'}
-          </button>
         </div>
 
         ${p
@@ -342,7 +326,7 @@ export class PlanWorkflow extends LitElement {
               </div>
             `
           : html`<p class="text-sm text-zinc-500">
-              Pick the delivery date and ingest its confirmed GableLBM orders — or seed demo orders first.
+              Pick the delivery date and ingest its confirmed GableLBM orders to begin planning.
             </p>`}
       </div>
     `;

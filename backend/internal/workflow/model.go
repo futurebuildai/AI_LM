@@ -151,8 +151,3 @@ type IngestRequest struct {
 type ResequenceRequest struct {
 	OrderIDs []string `json:"order_ids"`
 }
-
-// DemoSeedRequest asks GableLBM to seed demo orders for a date (default tomorrow).
-type DemoSeedRequest struct {
-	Date string `json:"date,omitempty"`
-}

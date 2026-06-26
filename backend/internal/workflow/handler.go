@@ -37,7 +37,6 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux, roleGuard ...func(http.Hand
 	mux.HandleFunc("PUT /api/v1/workflow/plans/{id}/loads/{vehicleId}/sequence", guard(h.HandleResequence))
 	mux.HandleFunc("POST /api/v1/workflow/plans/{id}/review", guard(h.HandleReview))
 	mux.HandleFunc("POST /api/v1/workflow/plans/{id}/push", guard(h.HandlePush))
-	mux.HandleFunc("POST /api/v1/workflow/demo-seed", guard(h.HandleDemoSeed))
 }
 
 func (h *Handler) HandleIngest(w http.ResponseWriter, r *http.Request) {
@@ -131,15 +130,4 @@ func (h *Handler) HandleResequence(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httputil.RespondJSON(w, http.StatusOK, plan)
-}
-
-func (h *Handler) HandleDemoSeed(w http.ResponseWriter, r *http.Request) {
-	var req DemoSeedRequest
-	_ = json.NewDecoder(r.Body).Decode(&req) // empty body → tomorrow
-	result, err := h.svc.DemoSeed(r.Context(), req.Date)
-	if err != nil {
-		httputil.RespondError(w, r, "demo seed failed", http.StatusBadGateway, err)
-		return
-	}
-	httputil.RespondJSON(w, http.StatusCreated, result)
 }

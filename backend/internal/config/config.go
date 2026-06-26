@@ -17,11 +17,15 @@ type Config struct {
 	DatabaseURL string
 
 	// Auth & Security — same convention as GableLBM-main / GableRun.
-	// AuthMode "dev" disables JWT auth for local development; otherwise
-	// JWKS_URL is required (fail-closed).
+	// AuthMode "dev" disables JWT auth for local development; otherwise a token
+	// verifier is required (fail-closed): SESSION_SECRET for AI_LM-issued staff
+	// session tokens, and/or JWKS_URL for externally-issued tokens.
 	AuthMode   string
 	JWKSURL    string
 	AuthIssuer string
+	// SessionSecret signs/verifies AI_LM staff session JWTs (internal/auth +
+	// pkg/middleware). Required when AUTH_MODE != "dev".
+	SessionSecret string
 
 	// GableLBM integration — AI_LM is a standalone service that pulls its
 	// source-of-truth data (orders, products, vehicles, deliveries) from the
@@ -45,9 +49,10 @@ func Load() (*Config, error) {
 		Port:        getEnv("PORT", "8090"),
 		DatabaseURL: getEnv("DATABASE_URL", "postgres://gable_user:gable_password@localhost:5434/ai_lm_db?sslmode=disable"),
 
-		AuthMode:   getEnv("AUTH_MODE", ""),
-		JWKSURL:    getEnv("JWKS_URL", ""),
-		AuthIssuer: getEnv("AUTH_ISSUER", ""),
+		AuthMode:      getEnv("AUTH_MODE", ""),
+		JWKSURL:       getEnv("JWKS_URL", ""),
+		AuthIssuer:    getEnv("AUTH_ISSUER", ""),
+		SessionSecret: getEnv("SESSION_SECRET", ""),
 
 		GableAPIURL:         getEnv("GABLE_API_URL", "http://localhost:8080"),
 		GableIntegrationKey: getEnv("GABLE_INTEGRATION_KEY", ""),
@@ -70,8 +75,12 @@ func Load() (*Config, error) {
 			!strings.Contains(cfg.DatabaseURL, "sslmode=verify-ca") {
 			return nil, fmt.Errorf("FATAL: DATABASE_URL must include sslmode=require or sslmode=verify-full when AUTH_MODE != 'dev'")
 		}
-		if cfg.JWKSURL == "" {
-			return nil, fmt.Errorf("FATAL: JWKS_URL must be set when AUTH_MODE != 'dev'")
+		// AI_LM now mints its own staff session tokens (internal/auth), so
+		// SESSION_SECRET is the required verifier in production. JWKS_URL is
+		// optional and only needed to additionally accept externally-issued
+		// (shared GableLBM JWKS) tokens.
+		if cfg.SessionSecret == "" {
+			return nil, fmt.Errorf("FATAL: SESSION_SECRET must be set when AUTH_MODE != 'dev' (signs AI_LM staff session tokens)")
 		}
 	}
 
