@@ -28,9 +28,13 @@ const (
 )
 
 // sweepAssign clusters stops by sweep angle and fills trucks (largest first)
-// against cargo/stop/shift caps. Returns per-truck loads (stops unsequenced)
-// and any stops no truck could take.
-func sweepAssign(vehicles []gable.Vehicle, stops []routing.Stop, depotLat, depotLng float64) ([]routing.Load, []routing.Stop) {
+// against cargo/stop/shift caps. A truck is also "full" when the next stop
+// would exceed its usable bed volume (T2-2): high-volume / low-weight loads
+// (e.g. natural-stone steps) max out on space before weight. volCapByVehicle
+// maps a vehicle id to its usable bed volume in ft³; a zero/absent entry
+// disables the volume cap for that truck. Returns per-truck loads (stops
+// unsequenced) and any stops no truck could take.
+func sweepAssign(vehicles []gable.Vehicle, stops []routing.Stop, depotLat, depotLng float64, volCapByVehicle map[string]float64) ([]routing.Load, []routing.Stop) {
 	usable := make([]gable.Vehicle, 0, len(vehicles))
 	for _, v := range vehicles {
 		if v.CapacityWeightLbs != nil && *v.CapacityWeightLbs > 0 {
@@ -62,6 +66,8 @@ func sweepAssign(vehicles []gable.Vehicle, stops []routing.Stop, depotLat, depot
 	vi := 0
 	var cur *routing.Load
 	var curCap float64
+	var curVolCap float64 // usable bed volume ft³ (0 ⇒ no volume cap)
+	var curVol float64    // volume committed to the current truck
 	var curDur float64
 	var lastLat, lastLng float64
 
@@ -78,6 +84,8 @@ func sweepAssign(vehicles []gable.Vehicle, stops []routing.Stop, depotLat, depot
 		})
 		cur = &loads[len(loads)-1]
 		curCap = float64(*v.CapacityWeightLbs) * cargoUtilizationCap
+		curVolCap = volCapByVehicle[v.ID]
+		curVol = 0
 		curDur = 0
 		lastLat, lastLng = depotLat, depotLng
 		return true
@@ -90,17 +98,21 @@ func sweepAssign(vehicles []gable.Vehicle, stops []routing.Stop, depotLat, depot
 				break
 			}
 			legMin := routing.HaversineMiles(lastLat, lastLng, s.Lat, s.Lng) / assignAvgSpeedMph * 60.0
+			fitsVolume := curVolCap <= 0 || curVol+s.VolumeCuFt <= curVolCap
 			fits := cur.TotalWeightLbs+s.WeightLbs <= curCap &&
+				fitsVolume &&
 				len(cur.Stops) < maxStopsPerTruck &&
 				curDur+legMin+serviceMinPerStop <= maxRouteDurationMin
-			// A stop heavier than any cap still goes alone on an empty truck if
-			// it fits the raw payload (better one hot truck than a lost order).
+			// A stop bigger than any cap still goes alone on an empty truck if it
+			// fits the raw payload (better one hot truck than a lost order). The
+			// physical packer flags any genuine bed overflow as unplaced.
 			if !fits && len(cur.Stops) == 0 && s.WeightLbs <= float64(cur.CapacityWeightLbs) {
 				fits = true
 			}
 			if fits {
 				cur.Stops = append(cur.Stops, s)
 				cur.TotalWeightLbs += s.WeightLbs
+				curVol += s.VolumeCuFt
 				curDur += legMin + serviceMinPerStop
 				lastLat, lastLng = s.Lat, s.Lng
 				placed = true

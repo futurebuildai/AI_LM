@@ -28,6 +28,8 @@ type payload struct {
 	Orders           []OrderAnalysis `json:"orders"`
 	Loads            []TruckLoad     `json:"loads"`
 	UnassignedOrders []Stop          `json:"unassigned_orders"`
+	Lock             *PlanLock       `json:"lock,omitempty"`
+	LateAdds         []LateAdd       `json:"late_adds,omitempty"`
 }
 
 func (r *Repository) marshalPayload(p *Plan) ([]byte, error) {
@@ -37,6 +39,8 @@ func (r *Repository) marshalPayload(p *Plan) ([]byte, error) {
 		Orders:           p.Orders,
 		Loads:            p.Loads,
 		UnassignedOrders: p.UnassignedOrders,
+		Lock:             p.Lock,
+		LateAdds:         p.LateAdds,
 	})
 }
 
@@ -50,6 +54,8 @@ func (r *Repository) unmarshalPayload(raw []byte, p *Plan) error {
 	p.Orders = pl.Orders
 	p.Loads = pl.Loads
 	p.UnassignedOrders = pl.UnassignedOrders
+	p.Lock = pl.Lock
+	p.LateAdds = pl.LateAdds
 	if p.Orders == nil {
 		p.Orders = []OrderAnalysis{}
 	}

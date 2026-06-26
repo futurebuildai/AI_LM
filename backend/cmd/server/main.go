@@ -148,7 +148,8 @@ func main() {
 	catalog.NewHandler(catalogSvc).RegisterRoutes(mux, writeGuard)
 
 	// Load optimization (pillar 1).
-	loadSvc := load.NewService(load.NewRepository(db), fleetSvc, load.NewShelfSolver())
+	loadSvc := load.NewService(load.NewRepository(db), fleetSvc, load.NewShelfSolver(),
+		cfg.SecurementJurisdiction, cfg.SecurementAnchorSpacingIn)
 	load.NewHandler(loadSvc).RegisterRoutes(mux, writeGuard)
 
 	// Routing (pillar 2).
@@ -160,7 +161,13 @@ func main() {
 	compliance.NewHandler(complianceSvc).RegisterRoutes(mux, writeGuard)
 
 	// Guided end-to-end workflow: ingest → analyze → assign → pack → review → push.
-	workflowSvc := workflow.NewService(workflow.NewRepository(db), gableClient, catalogSvc, fleetSvc, complianceSvc, aiClient)
+	workflowSvc := workflow.NewService(workflow.NewRepository(db), gableClient, catalogSvc, fleetSvc, complianceSvc, aiClient,
+		workflow.Config{
+			SecurementJurisdiction:    cfg.SecurementJurisdiction,
+			SecurementAnchorSpacingIn: cfg.SecurementAnchorSpacingIn,
+			LockMorningAt:             cfg.LockMorningAt,
+			LockAfternoonAt:           cfg.LockAfternoonAt,
+		})
 	workflow.NewHandler(workflowSvc).RegisterRoutes(mux, writeGuard)
 
 	// Health — liveness.

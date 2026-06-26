@@ -68,10 +68,22 @@ func (s *ShelfSolver) Solve(v Vehicle, items []Item) Plan {
 	var rowDepth float64 // max length of items in current row
 	var rowHeight float64 // max height in current row (for stacking ceiling)
 
+	// Volume budget (T2-2): enforce the bed's usable volume as a hard cap
+	// alongside the bed-envelope geometry, so a high-volume / low-weight load is
+	// capped by space, not just weight.
+	usableVol := UsableBedVolumeCuFt(v.BedLengthIn, v.BedWidthIn, v.BedHeightIn)
+	var placedVol float64
+
 	for _, u := range units {
 		it := u.item
 		if it.LengthIn <= 0 || it.WidthIn <= 0 || it.HeightIn <= 0 {
-			plan.Unplaced = append(plan.Unplaced, it.SKU)
+			plan.Unplaced = append(plan.Unplaced, it.SKU+" (no geometry)")
+			continue
+		}
+
+		// Hard volume cap: stop placing once the usable bed volume is consumed.
+		if uvol := itemVolumeCuFt(it); usableVol > 0 && placedVol+uvol > usableVol {
+			plan.Unplaced = append(plan.Unplaced, it.SKU+" (bed volume full)")
 			continue
 		}
 
@@ -108,6 +120,7 @@ func (s *ShelfSolver) Solve(v Vehicle, items []Item) Plan {
 			AxleGroup: nearestAxle(v.Axles, cursorX+it.LengthIn/2),
 		}
 		plan.Placements = append(plan.Placements, p)
+		placedVol += itemVolumeCuFt(it)
 
 		cursorY += it.WidthIn
 		if it.LengthIn > rowDepth {
@@ -119,6 +132,13 @@ func (s *ShelfSolver) Solve(v Vehicle, items []Item) Plan {
 	}
 
 	computeAxleLoads(&plan, v)
+	computeVolume(&plan, v)
+	for _, p := range plan.Placements {
+		if top := p.Z + p.HeightIn; top > plan.MaxLoadHeightIn {
+			plan.MaxLoadHeightIn = top
+		}
+	}
+	computeSecurement(&plan, v)
 	return plan
 }
 

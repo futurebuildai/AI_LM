@@ -48,6 +48,17 @@ type Config struct {
 	OpenRouterBaseURL string // OPENROUTER_BASE_URL (default https://openrouter.ai/api/v1)
 	OpenRouterModel   string // OPENROUTER_MODEL (default an open-weight model id)
 
+	// Load securement (T1-5/T2-7). SecurementJurisdiction selects the cargo
+	// tie-down ruleset (US_FMCSA, CA_NSC, …); SecurementAnchorSpacingIn models
+	// the bed's tie-down anchor pitch so straps are optimized onto real anchors.
+	SecurementJurisdiction    string  // SECUREMENT_JURISDICTION (default US_FMCSA)
+	SecurementAnchorSpacingIn float64 // SECUREMENT_ANCHOR_SPACING_IN (default 24)
+
+	// Scheduled re-optimization windows (T2-3). Times at which a plan's run
+	// auto-locks against silent re-shuffles (HH:MM, 24h, plan-local).
+	LockMorningAt   string // LOCK_MORNING_AT (default 06:00)
+	LockAfternoonAt string // LOCK_AFTERNOON_AT (default 11:00)
+
 	// Logging
 	LogLevel string // DEBUG, INFO, WARN, ERROR (default: INFO)
 
@@ -79,6 +90,12 @@ func Load() (*Config, error) {
 		OpenRouterAPIKey:  getEnv("OPENROUTER_API_KEY", ""),
 		OpenRouterBaseURL: getEnv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"),
 		OpenRouterModel:   getEnv("OPENROUTER_MODEL", "meta-llama/llama-3.3-70b-instruct"),
+
+		SecurementJurisdiction:    getEnv("SECUREMENT_JURISDICTION", "US_FMCSA"),
+		SecurementAnchorSpacingIn: getEnvFloat("SECUREMENT_ANCHOR_SPACING_IN", 24),
+
+		LockMorningAt:   getEnv("LOCK_MORNING_AT", "06:00"),
+		LockAfternoonAt: getEnv("LOCK_AFTERNOON_AT", "11:00"),
 
 		LogLevel: getEnv("LOG_LEVEL", "INFO"),
 
@@ -136,6 +153,18 @@ func getEnvInt(key string, fallback int) int {
 			return fallback
 		}
 		return n
+	}
+	return fallback
+}
+
+func getEnvFloat(key string, fallback float64) float64 {
+	if value, exists := os.LookupEnv(key); exists {
+		f, err := strconv.ParseFloat(value, 64)
+		if err != nil {
+			slog.Warn("Invalid float env var, using default", "key", key, "value", value, "default", fallback)
+			return fallback
+		}
+		return f
 	}
 	return fallback
 }

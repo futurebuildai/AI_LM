@@ -19,6 +19,13 @@ import {
   Link2,
   Star,
   RefreshCw,
+  Lock,
+  Unlock,
+  Camera,
+  Ruler,
+  Check,
+  X,
+  Plus,
 } from 'lucide';
 import {
   aiLmService,
@@ -82,6 +89,24 @@ export class PlanWorkflow extends LitElement {
   @state() private _briefingOpen = false;
   @state() private _briefingBusy = false;
 
+  // T2-3 — pending override prompt when a reshuffle hits a locked run.
+  @state() private _override: { message: string; run: () => Promise<void> } | null = null;
+
+  // T2-2 — inline dimension-override editor target + form.
+  @state() private _dimEdit: { orderId: string; productId: string; sku: string } | null = null;
+  @state() private _dim = { l: 0, w: 0, h: 0, tol: 0, src: 'MEASURED' };
+
+  // T1-6 — yard proof attachment form.
+  @state() private _proofUrl = '';
+  @state() private _proofKind = 'PHOTO';
+
+  // T2-3 — late-add order id input.
+  @state() private _lateOrderId = '';
+
+  private _signedBy(): string {
+    return localStorage.getItem('ailm_name') || 'Yard staff';
+  }
+
   connectedCallback() {
     super.connectedCallback();
     this._loadLatest();
@@ -132,6 +157,7 @@ export class PlanWorkflow extends LitElement {
     if (this._activeTruck >= p.loads.length) this._activeTruck = 0;
     this._stepSlider = -1;
     this._stopPlayback();
+    this._override = null;
     // The plan changed — the prior briefing is stale; let the user regenerate.
     this._briefing = null;
   }
@@ -142,9 +168,48 @@ export class PlanWorkflow extends LitElement {
     this._run('ingest', () => aiLmService.ingestWorkflow(this._date), (p) => this._setPlan(p));
   }
 
+  // _runReshuffle runs a lock-gated action (assign / resequence / priority).
+  // When the run is locked the backend returns 423; we surface an override
+  // prompt so an approver can authorize the change (T2-3).
+  private async _runReshuffle(
+    label: string,
+    fn: (override: boolean, approvedBy: string) => Promise<WorkflowPlan>,
+  ) {
+    this._busy = label;
+    this._error = '';
+    this._notice = '';
+    this._override = null;
+    try {
+      this._setPlan(await fn(false, ''), this._step);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (/lock|manual approval/i.test(msg)) {
+        this._override = {
+          message: msg,
+          run: async () => {
+            this._busy = label;
+            this._error = '';
+            try {
+              this._setPlan(await fn(true, this._signedBy()), this._step);
+              this._override = null;
+            } catch (e) {
+              this._error = e instanceof Error ? e.message : String(e);
+            } finally {
+              this._busy = '';
+            }
+          },
+        };
+      } else {
+        this._error = msg;
+      }
+    } finally {
+      this._busy = '';
+    }
+  }
+
   private _assign() {
     if (!this._plan) return;
-    this._run('assign', () => aiLmService.assignWorkflow(this._plan!.id), (p) => this._setPlan(p));
+    this._runReshuffle('assign', (o, by) => aiLmService.assignWorkflow(this._plan!.id, o, by));
   }
 
   private _pack() {
@@ -167,10 +232,8 @@ export class PlanWorkflow extends LitElement {
     const j = idx + dir;
     if (j < 0 || j >= ids.length) return;
     [ids[idx], ids[j]] = [ids[j], ids[idx]];
-    this._run(
-      'reseq',
-      () => aiLmService.resequenceWorkflow(this._plan!.id, truck.vehicle_id, ids),
-      (p) => this._setPlan(p, this._step),
+    this._runReshuffle('reseq', (o, by) =>
+      aiLmService.resequenceWorkflow(this._plan!.id, truck.vehicle_id, ids, o, by),
     );
   }
 
@@ -178,9 +241,114 @@ export class PlanWorkflow extends LitElement {
   // truck, pinning priority stops to the front of the route.
   private _togglePriority(orderId: string, next: boolean) {
     if (!this._plan) return;
+    this._runReshuffle(`prio:${orderId}`, (o, by) =>
+      aiLmService.setStopPriority(this._plan!.id, orderId, next, o, by),
+    );
+  }
+
+  // --- T2-3: scheduled lock windows -----------------------------------------
+
+  private _lock(window: string) {
+    if (!this._plan) return;
     this._run(
-      `prio:${orderId}`,
-      () => aiLmService.setStopPriority(this._plan!.id, orderId, next),
+      'lock',
+      () => aiLmService.lockPlan(this._plan!.id, { locked: true, window, locked_by: this._signedBy() }),
+      (p) => this._setPlan(p, this._step),
+    );
+  }
+
+  private _unlock() {
+    if (!this._plan) return;
+    this._run(
+      'lock',
+      () => aiLmService.unlockPlan(this._plan!.id, 'manual unlock', this._signedBy()),
+      (p) => this._setPlan(p, this._step),
+    );
+  }
+
+  private _addLate() {
+    if (!this._plan || !this._lateOrderId.trim()) return;
+    const oid = this._lateOrderId.trim();
+    this._run(
+      'late',
+      () => aiLmService.addLateOrder(this._plan!.id, { order_id: oid, requested_by: this._signedBy() }),
+      (p) => {
+        this._lateOrderId = '';
+        this._setPlan(p, this._step);
+      },
+    );
+  }
+
+  private _resolveLate(orderId: string, reject: boolean) {
+    if (!this._plan) return;
+    this._run(
+      `late:${orderId}`,
+      () => aiLmService.resolveLateAdd(this._plan!.id, orderId, { reject, approved_by: this._signedBy() }),
+      (p) => this._setPlan(p, this._step),
+    );
+  }
+
+  // --- T2-2: per-order dimension override ------------------------------------
+
+  private _openDimEditor(orderId: string, l: { product_id: string; sku: string; unit_length_in: number; unit_width_in: number; unit_height_in: number; dim_override?: { length_in: number; width_in: number; height_in: number; tolerance_pct?: number; source?: string } }) {
+    const ov = l.dim_override;
+    this._dim = {
+      l: ov?.length_in ?? Math.round(l.unit_length_in),
+      w: ov?.width_in ?? Math.round(l.unit_width_in),
+      h: ov?.height_in ?? Math.round(l.unit_height_in),
+      tol: ov?.tolerance_pct ?? 0,
+      src: ov?.source ?? 'MEASURED',
+    };
+    this._dimEdit = { orderId, productId: l.product_id, sku: l.sku };
+  }
+
+  private _saveDim() {
+    if (!this._plan || !this._dimEdit) return;
+    const { orderId, productId, sku } = this._dimEdit;
+    this._run(
+      'dim',
+      () =>
+        aiLmService.setLineDimensions(this._plan!.id, orderId, {
+          product_id: productId,
+          sku,
+          length_in: Number(this._dim.l),
+          width_in: Number(this._dim.w),
+          height_in: Number(this._dim.h),
+          tolerance_pct: Number(this._dim.tol),
+          source: this._dim.src,
+        }),
+      (p) => {
+        this._dimEdit = null;
+        this._setPlan(p, this._step);
+      },
+    );
+  }
+
+  // --- T1-6: yard proof + sign-off -------------------------------------------
+
+  private _addProof(t: TruckLoad) {
+    if (!this._plan || !this._proofUrl.trim()) return;
+    const url = this._proofUrl.trim();
+    this._run(
+      'proof',
+      () =>
+        aiLmService.attachProof(this._plan!.id, t.vehicle_id, {
+          url,
+          kind: this._proofKind,
+          added_by: this._signedBy(),
+        }),
+      (p) => {
+        this._proofUrl = '';
+        this._setPlan(p, this._step);
+      },
+    );
+  }
+
+  private _signOff(t: TruckLoad) {
+    if (!this._plan) return;
+    this._run(
+      'signoff',
+      () => aiLmService.signOffLoad(this._plan!.id, t.vehicle_id, { signed_by: this._signedBy() }),
       (p) => this._setPlan(p, this._step),
     );
   }
@@ -266,7 +434,25 @@ export class PlanWorkflow extends LitElement {
 
         ${this._renderStepper()}
 
+        ${this._plan ? this._renderLockBar() : nothing}
+
         ${this._plan && this._plan.loads.length > 0 ? this._renderBriefing() : nothing}
+
+        ${this._override
+          ? html`<div class="px-4 py-3 rounded-lg border border-amber-warn/40 bg-amber-warn/10 text-amber-warn text-sm flex flex-wrap items-center gap-3">
+              ${icon(Lock, 16)}
+              <span class="flex-1 min-w-[12rem]">${this._override.message}</span>
+              <button
+                @click=${() => this._override?.run()}
+                ?disabled=${this._busy !== ''}
+                class="flex items-center gap-1.5 bg-amber-warn text-deep-space font-semibold px-3 py-1.5 rounded-lg disabled:opacity-50"
+              >${icon(Check, 14)} Approve &amp; override</button>
+              <button
+                @click=${() => { this._override = null; }}
+                class="text-zinc-400 hover:text-white"
+              >${icon(X, 16)}</button>
+            </div>`
+          : nothing}
 
         ${this._error
           ? html`<div class="px-4 py-2.5 rounded-lg border border-safety-red/30 bg-safety-red/10 text-safety-red text-sm">${this._error}</div>`
@@ -310,6 +496,96 @@ export class PlanWorkflow extends LitElement {
             </button>
           `;
         })}
+      </div>
+    `;
+  }
+
+  // --- T2-3: scheduled lock-window control -----------------------------------
+
+  private _renderLockBar() {
+    const lock = this._plan!.lock;
+    const locked = !!lock?.locked;
+    const busy = this._busy === 'lock';
+    return html`
+      <div class="glass-card rounded-xl px-4 py-2.5 flex flex-wrap items-center gap-3 text-sm">
+        ${icon(locked ? Lock : Unlock, 16, locked ? 'text-amber-warn' : 'text-gable-green')}
+        <span class="font-medium ${locked ? 'text-amber-warn' : 'text-zinc-300'}">
+          ${locked ? 'Run locked' : 'Run open'}
+        </span>
+        ${lock?.window
+          ? html`<span class="font-mono text-[10px] text-zinc-500 px-1.5 py-0.5 rounded border border-white/10">
+              ${lock.window}${lock.lock_at ? ` · ${lock.lock_at}` : ''}
+            </span>`
+          : nothing}
+        ${lock?.reason ? html`<span class="text-xs text-zinc-500 truncate max-w-[20rem]">${lock.reason}</span>` : nothing}
+        <div class="ml-auto flex items-center gap-2">
+          ${locked
+            ? html`<button
+                @click=${this._unlock}
+                ?disabled=${busy}
+                class="flex items-center gap-1.5 border border-gable-green/40 text-gable-green px-2.5 py-1.5 rounded-lg hover:bg-gable-green/10 disabled:opacity-50"
+              >${icon(Unlock, 14)} Unlock</button>`
+            : html`
+                <button
+                  @click=${() => this._lock('MORNING')}
+                  ?disabled=${busy}
+                  class="flex items-center gap-1.5 border border-amber-warn/40 text-amber-warn px-2.5 py-1.5 rounded-lg hover:bg-amber-warn/10 disabled:opacity-50"
+                >${icon(Lock, 14)} Lock morning</button>
+                <button
+                  @click=${() => this._lock('AFTERNOON')}
+                  ?disabled=${busy}
+                  class="flex items-center gap-1.5 border border-amber-warn/40 text-amber-warn px-2.5 py-1.5 rounded-lg hover:bg-amber-warn/10 disabled:opacity-50"
+                >${icon(Lock, 14)} Lock afternoon</button>
+              `}
+        </div>
+      </div>
+      ${this._renderLateAdds()}
+    `;
+  }
+
+  private _renderLateAdds() {
+    const adds = this._plan?.late_adds ?? [];
+    const pending = adds.filter((a) => a.status === 'PENDING');
+    const locked = !!this._plan?.lock?.locked;
+    if (!locked && pending.length === 0) return nothing;
+    return html`
+      <div class="glass-card rounded-xl px-4 py-3 mt-2 space-y-2">
+        <div class="flex flex-wrap items-center gap-2">
+          <span class="text-xs font-semibold text-zinc-300">Late same-day add</span>
+          <input
+            type="text"
+            placeholder="GableLBM order id"
+            .value=${this._lateOrderId}
+            @input=${(e: Event) => { this._lateOrderId = (e.target as HTMLInputElement).value; }}
+            class="bg-slate-steel border border-white/10 rounded-lg px-2.5 py-1.5 text-xs font-mono text-white focus:outline-none focus:ring-1 focus:ring-gable-green/50 w-56"
+          />
+          <button
+            @click=${this._addLate}
+            ?disabled=${this._busy !== '' || !this._lateOrderId.trim()}
+            class="flex items-center gap-1.5 border border-blueprint-blue/40 text-blueprint-blue px-2.5 py-1.5 rounded-lg hover:bg-blueprint-blue/10 disabled:opacity-50 text-xs"
+          >${icon(Plus, 13)} Queue add</button>
+          ${locked ? html`<span class="text-[11px] text-amber-warn">Locked — late adds need approval before they reshuffle the run.</span>` : nothing}
+        </div>
+        ${pending.length > 0
+          ? html`<ul class="space-y-1.5">
+              ${pending.map(
+                (a) => html`<li class="flex items-center gap-2 text-xs">
+                  <span class="font-mono px-1.5 py-0.5 rounded border border-amber-warn/40 text-amber-warn">PENDING</span>
+                  <span class="text-zinc-300 flex-1 truncate">${a.customer_name || a.order_id}</span>
+                  <button
+                    @click=${() => this._resolveLate(a.order_id, false)}
+                    ?disabled=${this._busy !== ''}
+                    class="flex items-center gap-1 text-gable-green hover:text-gable-green/80 disabled:opacity-50"
+                  >${icon(Check, 13)} Approve</button>
+                  <button
+                    @click=${() => this._resolveLate(a.order_id, true)}
+                    ?disabled=${this._busy !== ''}
+                    class="flex items-center gap-1 text-safety-red hover:text-safety-red/80 disabled:opacity-50"
+                  >${icon(X, 13)} Reject</button>
+                </li>`,
+              )}
+            </ul>`
+          : nothing}
       </div>
     `;
   }
@@ -453,21 +729,99 @@ export class PlanWorkflow extends LitElement {
           <div><dt class="text-[10px] text-zinc-500 uppercase">Max len</dt><dd class="font-mono text-sm text-zinc-200">${(o.max_length_in / 12).toFixed(0)}<span class="text-zinc-500 text-[10px]"> ft</span></dd></div>
         </dl>
         <div class="space-y-1">
-          ${o.lines.map(
-            (l) => html`
-              <div class="flex items-center gap-2 text-xs">
-                <span class="font-mono text-zinc-400 w-28 truncate shrink-0">${l.sku}</span>
-                <span class="flex-1 truncate text-zinc-300">${l.name || ''}</span>
-                <span class="font-mono text-zinc-400">×${l.quantity}</span>
-                <span class="font-mono text-zinc-500 w-20 text-right">${Math.round(l.line_weight_lbs).toLocaleString()} lb</span>
-                ${l.has_geometry ? nothing : html`<span title="no digital-twin geometry">${icon(AlertTriangle, 12, 'text-amber-warn')}</span>`}
-              </div>
-            `,
-          )}
+          ${o.lines.map((l) => this._orderLine(o, l))}
         </div>
         ${o.issues.length > 0
           ? html`<div class="text-xs text-amber-warn flex items-start gap-1.5">${icon(AlertTriangle, 13)} ${o.issues.join(' · ')}</div>`
           : nothing}
+      </div>
+    `;
+  }
+
+  private _orderLine(o: OrderAnalysis, l: OrderAnalysis['lines'][number]) {
+    const editing =
+      this._dimEdit?.orderId === o.order_id && this._dimEdit?.sku === l.sku && this._dimEdit?.productId === l.product_id;
+    const overridden = !!l.dim_override;
+    return html`
+      <div class="text-xs">
+        <div class="flex items-center gap-2">
+          <span class="font-mono text-zinc-400 w-28 truncate shrink-0">${l.sku}</span>
+          <span class="flex-1 truncate text-zinc-300">${l.name || ''}</span>
+          <span class="font-mono text-zinc-400">×${l.quantity}</span>
+          <span class="font-mono text-zinc-500 w-20 text-right">${Math.round(l.line_weight_lbs).toLocaleString()} lb</span>
+          ${l.has_geometry
+            ? nothing
+            : html`<span title="no digital-twin geometry">${icon(AlertTriangle, 12, 'text-amber-warn')}</span>`}
+          <button
+            @click=${() => (editing ? (this._dimEdit = null) : this._openDimEditor(o.order_id, l))}
+            class="shrink-0 ${overridden ? 'text-blueprint-blue' : 'text-zinc-600 hover:text-blueprint-blue'}"
+            title=${overridden ? 'Dimension override set — edit' : 'Set order dimensions (variable-size SKU)'}
+            aria-label="Set dimensions"
+          >${icon(Ruler, 13)}</button>
+        </div>
+        ${overridden && !editing
+          ? html`<div class="pl-28 text-[10px] text-blueprint-blue/80 font-mono">
+              ${l.dim_override!.length_in}×${l.dim_override!.width_in}×${l.dim_override!.height_in}″${l.dim_override!.tolerance_pct ? ` +${l.dim_override!.tolerance_pct}%` : ''} (${l.dim_override!.source || 'MEASURED'})
+            </div>`
+          : nothing}
+        ${editing ? this._dimEditor() : nothing}
+      </div>
+    `;
+  }
+
+  private _dimEditor() {
+    const num = (v: string) => Number(v) || 0;
+    return html`
+      <div class="mt-1.5 mb-1 p-2 rounded-lg border border-blueprint-blue/30 bg-blueprint-blue/5 space-y-2">
+        <div class="flex flex-wrap items-end gap-2">
+          ${(['l', 'w', 'h'] as const).map(
+            (k) => html`<label class="flex flex-col gap-0.5 text-[10px] text-zinc-500 uppercase">
+              ${k === 'l' ? 'Length' : k === 'w' ? 'Width' : 'Height'} (in)
+              <input
+                type="number"
+                min="0"
+                .value=${String(this._dim[k])}
+                @input=${(e: Event) => { this._dim = { ...this._dim, [k]: num((e.target as HTMLInputElement).value) }; }}
+                class="bg-slate-steel border border-white/10 rounded px-1.5 py-1 w-16 text-xs font-mono text-white focus:outline-none focus:ring-1 focus:ring-blueprint-blue/50"
+              />
+            </label>`,
+          )}
+          <label class="flex flex-col gap-0.5 text-[10px] text-zinc-500 uppercase">
+            Tol %
+            <input
+              type="number"
+              min="0"
+              .value=${String(this._dim.tol)}
+              @input=${(e: Event) => { this._dim = { ...this._dim, tol: num((e.target as HTMLInputElement).value) }; }}
+              class="bg-slate-steel border border-white/10 rounded px-1.5 py-1 w-14 text-xs font-mono text-white focus:outline-none focus:ring-1 focus:ring-blueprint-blue/50"
+            />
+          </label>
+          <label class="flex flex-col gap-0.5 text-[10px] text-zinc-500 uppercase">
+            Source
+            <select
+              .value=${this._dim.src}
+              @change=${(e: Event) => { this._dim = { ...this._dim, src: (e.target as HTMLSelectElement).value }; }}
+              class="bg-slate-steel border border-white/10 rounded px-1.5 py-1 text-xs text-white focus:outline-none focus:ring-1 focus:ring-blueprint-blue/50"
+            >
+              <option value="MEASURED">Measured</option>
+              <option value="AVERAGE">Average</option>
+            </select>
+          </label>
+        </div>
+        <p class="text-[10px] text-zinc-500">
+          Average sizes are grown to a planning upper bound by the tolerance (default 15% when none given).
+        </p>
+        <div class="flex items-center gap-2">
+          <button
+            @click=${this._saveDim}
+            ?disabled=${this._busy !== '' || this._dim.l <= 0 || this._dim.w <= 0 || this._dim.h <= 0}
+            class="flex items-center gap-1 bg-blueprint-blue text-deep-space font-semibold px-2.5 py-1 rounded text-xs disabled:opacity-50"
+          >${icon(Check, 13)} Apply &amp; re-pack</button>
+          <button
+            @click=${() => { this._dimEdit = null; }}
+            class="text-zinc-400 hover:text-white text-xs"
+          >Cancel</button>
+        </div>
       </div>
     `;
   }
@@ -638,6 +992,7 @@ export class PlanWorkflow extends LitElement {
                   ${this._stopSequencer(t)}
                   ${this._axleBars(t)}
                   ${this._securementCard(t)}
+                  ${this._proofCard(t)}
                 </div>
               </div>
             `
@@ -772,6 +1127,14 @@ export class PlanWorkflow extends LitElement {
           <span class="text-zinc-400">Balance score</span>
           <span class="font-mono text-blueprint-blue">${(lp.balance_score * 100).toFixed(0)}%</span>
         </div>
+        ${lp.usable_volume_cuft
+          ? html`<div class="mt-2 flex justify-between text-xs items-center">
+              <span class="text-zinc-400">Bed volume</span>
+              <span class="font-mono ${lp.volume_status === 'FAIL' ? 'text-safety-red' : lp.volume_status === 'WARN' ? 'text-amber-warn' : 'text-zinc-300'}">
+                ${(lp.cargo_volume_cuft ?? 0).toFixed(0)} / ${lp.usable_volume_cuft.toFixed(0)} ft³ (${((lp.volume_utilization ?? 0) * 100).toFixed(0)}%)
+              </span>
+            </div>`
+          : nothing}
       </div>
     `;
   }
@@ -783,10 +1146,18 @@ export class PlanWorkflow extends LitElement {
       <div class="glass-card rounded-xl p-4">
         <h2 class="text-sm font-semibold text-zinc-300 mb-1 flex items-center gap-2">
           ${icon(Link2, 15, 'text-amber-warn')} Securement
+          ${sec.jurisdiction
+            ? html`<span class="ml-auto font-mono text-[10px] text-blueprint-blue px-1.5 py-0.5 rounded border border-blueprint-blue/40" title=${sec.rule_basis}>${sec.jurisdiction}</span>`
+            : nothing}
         </h2>
         <p class="text-xs text-zinc-500 mb-3">
-          ${sec.straps.length} tie-down(s) · ${sec.recommended_strap} · straps render in the 3D view once the load is complete.
+          ${sec.straps.length} tie-down(s) · ${sec.recommended_strap}
+          ${sec.required_tie_downs ? html` · rule min ${sec.required_tie_downs}` : nothing}
+          ${sec.anchor_spacing_in ? html` · ${sec.anchor_spacing_in.toFixed(0)}″ anchor pitch` : nothing}
         </p>
+        ${sec.ruleset_name
+          ? html`<p class="text-[11px] text-zinc-500 mb-3">Ruleset: <span class="text-zinc-300">${sec.ruleset_name}</span></p>`
+          : nothing}
         <div class="space-y-1.5 mb-3">
           ${sec.straps.map(
             (st) => html`
@@ -805,6 +1176,73 @@ export class PlanWorkflow extends LitElement {
         <ul class="space-y-1 text-[11px] text-zinc-500 list-disc list-inside">
           ${sec.notes.map((n) => html`<li>${n}</li>`)}
         </ul>
+      </div>
+    `;
+  }
+
+  // --- T1-6: yard proof-of-load + sign-off card -------------------------------
+
+  private _proofCard(t: TruckLoad) {
+    const proof = t.proof;
+    const hasShots = !!proof && proof.attachments.length > 0;
+    const ready = hasShots && !!proof?.signed_off;
+    return html`
+      <div class="glass-card rounded-xl p-4">
+        <h2 class="text-sm font-semibold text-zinc-300 mb-1 flex items-center gap-2">
+          ${icon(Camera, 15, 'text-gable-green')} Yard proof &amp; sign-off
+          <span class="ml-auto font-mono text-[10px] px-1.5 py-0.5 rounded border ${ready
+            ? 'text-gable-green border-gable-green/40'
+            : 'text-amber-warn border-amber-warn/40'}">${ready ? 'READY' : 'PENDING'}</span>
+        </h2>
+        <p class="text-xs text-zinc-500 mb-3">
+          A photo/video of the loaded truck and a sign-off are required before it can leave the yard.
+        </p>
+        ${hasShots
+          ? html`<div class="grid grid-cols-3 gap-2 mb-3">
+              ${proof!.attachments.map((a) =>
+                a.kind === 'PHOTO'
+                  ? html`<a href=${a.url} target="_blank" rel="noopener" class="block aspect-video rounded border border-white/10 overflow-hidden" title=${a.caption || ''}>
+                      <img src=${a.url} alt=${a.caption || 'load proof'} class="w-full h-full object-cover" />
+                    </a>`
+                  : html`<a href=${a.url} target="_blank" rel="noopener" class="flex items-center justify-center aspect-video rounded border border-white/10 text-[10px] text-blueprint-blue">
+                      ${icon(Play, 14)} video
+                    </a>`,
+              )}
+            </div>`
+          : nothing}
+        <div class="flex flex-wrap items-center gap-2 mb-3">
+          <input
+            type="text"
+            placeholder="photo / video URL"
+            .value=${this._proofUrl}
+            @input=${(e: Event) => { this._proofUrl = (e.target as HTMLInputElement).value; }}
+            class="flex-1 min-w-[10rem] bg-slate-steel border border-white/10 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:ring-1 focus:ring-gable-green/50"
+          />
+          <select
+            .value=${this._proofKind}
+            @change=${(e: Event) => { this._proofKind = (e.target as HTMLSelectElement).value; }}
+            class="bg-slate-steel border border-white/10 rounded-lg px-2 py-1.5 text-xs text-white focus:outline-none"
+          >
+            <option value="PHOTO">Photo</option>
+            <option value="VIDEO">Video</option>
+          </select>
+          <button
+            @click=${() => this._addProof(t)}
+            ?disabled=${this._busy !== '' || !this._proofUrl.trim()}
+            class="flex items-center gap-1 border border-gable-green/40 text-gable-green px-2.5 py-1.5 rounded-lg hover:bg-gable-green/10 disabled:opacity-50 text-xs"
+          >${icon(Plus, 13)} Attach</button>
+        </div>
+        ${proof?.signed_off
+          ? html`<div class="flex items-center gap-2 text-xs text-gable-green">
+              ${icon(CheckCircle2, 14)} Signed off by <span class="text-zinc-200">${proof.signed_by}</span>
+              ${proof.signed_at ? html`<span class="font-mono text-zinc-500">· ${new Date(proof.signed_at).toLocaleString()}</span>` : nothing}
+            </div>`
+          : html`<button
+              @click=${() => this._signOff(t)}
+              ?disabled=${this._busy !== '' || !hasShots}
+              title=${hasShots ? '' : 'Attach at least one photo/video first'}
+              class="flex items-center gap-1.5 bg-gable-green text-deep-space font-semibold px-3 py-1.5 rounded-lg hover:shadow-glow transition-all disabled:opacity-40 text-xs"
+            >${icon(Check, 14)} Sign off — ready to depart</button>`}
       </div>
     `;
   }
@@ -932,6 +1370,8 @@ export class PlanWorkflow extends LitElement {
     const p = this._plan;
     if (!p || p.loads.length === 0) return this._renderAssign();
     const anyFail = p.loads.some((l) => l.compliance?.status === 'FAIL');
+    const proofReady = (l: TruckLoad) => !!l.proof && l.proof.attachments.length > 0 && l.proof.signed_off;
+    const notReady = p.loads.filter((l) => !proofReady(l));
     const pushed = p.status === 'PUSHED';
     const ordersById = new Map(p.orders.map((o) => [o.order_id, o]));
     return html`
@@ -947,8 +1387,12 @@ export class PlanWorkflow extends LitElement {
               </p>
               <button
                 @click=${this._push}
-                ?disabled=${this._busy !== '' || anyFail}
-                title=${anyFail ? 'Resolve all FAIL compliance flags before pushing' : ''}
+                ?disabled=${this._busy !== '' || anyFail || notReady.length > 0}
+                title=${anyFail
+                  ? 'Resolve all FAIL compliance flags before pushing'
+                  : notReady.length > 0
+                    ? 'Every truck needs yard proof + sign-off before it can depart'
+                    : ''}
                 class="flex items-center gap-2 bg-gable-green text-deep-space font-semibold px-5 py-2.5 rounded-lg hover:shadow-glow transition-all disabled:opacity-40"
               >
                 ${icon(Send, 18)} ${this._busy === 'push' ? 'Pushing…' : 'Push to GableLBM dispatch'}
@@ -957,6 +1401,12 @@ export class PlanWorkflow extends LitElement {
         ${anyFail && !pushed
           ? html`<div class="px-4 py-2.5 rounded-lg border border-safety-red/30 bg-safety-red/10 text-safety-red text-sm">
               One or more trucks still FAIL route compliance — go back to Route Review.
+            </div>`
+          : nothing}
+        ${!anyFail && notReady.length > 0 && !pushed
+          ? html`<div class="px-4 py-2.5 rounded-lg border border-amber-warn/30 bg-amber-warn/10 text-amber-warn text-sm flex items-center gap-2">
+              ${icon(Camera, 16)}
+              <span>Yard proof + sign-off required before depart: ${notReady.map((l) => l.vehicle_name).join(', ')}.</span>
             </div>`
           : nothing}
 
@@ -969,17 +1419,35 @@ export class PlanWorkflow extends LitElement {
 
   private _manifestCard(l: TruckLoad, li: number, ordersById: Map<string, OrderAnalysis>) {
     const color = STOP_HEX[li % STOP_HEX.length];
+    const proofReady = !!l.proof && l.proof.attachments.length > 0 && l.proof.signed_off;
+    const hasShots = !!l.proof && l.proof.attachments.length > 0;
     return html`
       <div class="glass-card rounded-xl p-5">
         <div class="flex items-center gap-2 mb-1">
           <span class="h-3 w-3 rounded-full" style="background:${color};box-shadow:0 0 8px ${color}"></span>
           <h2 class="text-base font-semibold text-zinc-100 flex-1">${l.vehicle_name}</h2>
+          <span class="font-mono text-[10px] px-1.5 py-1 rounded border flex items-center gap-1 ${proofReady
+            ? 'text-gable-green border-gable-green/40'
+            : 'text-amber-warn border-amber-warn/40'}" title="Yard proof + sign-off">
+            ${icon(Camera, 11)} ${proofReady ? 'SIGNED' : 'NO SIGN-OFF'}
+          </span>
           <span class="font-mono text-xs px-2 py-1 rounded border ${l.compliance?.status === 'PASS'
             ? 'text-gable-green border-gable-green/40'
             : l.compliance?.status === 'WARN'
               ? 'text-amber-warn border-amber-warn/40'
               : 'text-safety-red border-safety-red/40'}">${l.compliance?.status ?? '—'}</span>
         </div>
+        ${this._plan?.status !== 'PUSHED' && !proofReady
+          ? html`<div class="mb-3 flex items-center gap-2 text-xs">
+              ${hasShots
+                ? html`<button
+                    @click=${() => this._signOff(l)}
+                    ?disabled=${this._busy !== ''}
+                    class="flex items-center gap-1.5 bg-gable-green text-deep-space font-semibold px-2.5 py-1 rounded disabled:opacity-50"
+                  >${icon(Check, 13)} Sign off — ready to depart</button>`
+                : html`<span class="text-amber-warn flex items-center gap-1.5">${icon(AlertTriangle, 13)} Attach proof on the Pack step before sign-off.</span>`}
+            </div>`
+          : nothing}
         <p class="text-xs text-zinc-400 mb-4 pl-5">
           Driver: <span class="text-zinc-300">${l.driver_name || 'unassigned'}</span>
           · <span class="font-mono">${Math.round(l.total_weight_lbs).toLocaleString()} lb</span>

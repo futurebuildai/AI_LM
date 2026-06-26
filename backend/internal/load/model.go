@@ -27,6 +27,13 @@ type Vehicle struct {
 	GVWRLbs        int64
 	TareWeightLbs  int64
 	Axles          []Axle
+
+	// Securement inputs (T1-5/T2-7). SecurementJurisdiction selects the
+	// load-securement ruleset; AnchorSpacingIn models the winch-track / D-ring
+	// tie-down anchor pitch along the bed (0 ⇒ a sensible default) so straps are
+	// optimized onto real anchor points.
+	SecurementJurisdiction string
+	AnchorSpacingIn        float64
 }
 
 // Axle is a rated axle at a longitudinal position.
@@ -84,8 +91,19 @@ type Plan struct {
 	GVWStatus       string      `json:"gvw_status"`    // PASS/WARN/FAIL
 	Unplaced        []string    `json:"unplaced"`      // SKUs that did not fit
 	MaxLoadHeightIn float64     `json:"max_load_height_in,omitempty"`
-	Securement      *Securement `json:"securement,omitempty"`
-	CreatedAt       time.Time   `json:"created_at"`
+
+	// Volume budget (T2-2): a high-volume / low-weight load can max out the bed
+	// before it maxes out the axles. CargoVolumeCuFt is the placed bounding
+	// volume; UsableVolumeCuFt is the bed envelope discounted for real packing
+	// efficiency; VolumeStatus mirrors the axle PASS/WARN/FAIL scale.
+	BedVolumeCuFt     float64 `json:"bed_volume_cuft,omitempty"`
+	UsableVolumeCuFt  float64 `json:"usable_volume_cuft,omitempty"`
+	CargoVolumeCuFt   float64 `json:"cargo_volume_cuft,omitempty"`
+	VolumeUtilization float64 `json:"volume_utilization,omitempty"`
+	VolumeStatus      string  `json:"volume_status,omitempty"` // PASS/WARN/FAIL
+
+	Securement *Securement `json:"securement,omitempty"`
+	CreatedAt  time.Time   `json:"created_at"`
 }
 
 // StopItems is one delivery stop's resolved line items for sequenced packing.
@@ -95,22 +113,34 @@ type StopItems struct {
 	Items        []Item `json:"items"`
 }
 
-// Strap is one tie-down across the load at a longitudinal position.
+// Strap is one tie-down across the load at a longitudinal position. PositionIn
+// is snapped to the nearest modeled bed anchor so the recommendation lands on a
+// real tie-down point.
 type Strap struct {
 	Number         int     `json:"number"`
-	PositionIn     float64 `json:"position_in"`      // inches from the bed front
+	PositionIn     float64 `json:"position_in"`      // inches from the bed front (anchored)
 	OverHeightIn   float64 `json:"over_height_in"`   // load height under the strap
 	RequiredWLLLbs int64   `json:"required_wll_lbs"` // working-load-limit share
 }
 
-// Securement is the tie-down plan for a packed load, derived from the
-// FMCSA §393.106 / NSC Standard 10 rules: aggregate working load limit ≥ 50%
-// of cargo weight, two tie-downs for the first 10 ft of article length plus
-// one per additional 10 ft (or fraction).
+// Securement is the tie-down plan for a packed load, derived from a configurable
+// jurisdiction load-securement ruleset (US FMCSA / Canada NSC Standard 10 …):
+// aggregate working load limit ≥ a fraction of cargo weight, plus a minimum
+// tie-down count by article length / weight / max-spacing. Strap positions are
+// optimized onto the modeled bed anchor points. The rule basis is surfaced so
+// the recommendation is auditable.
 type Securement struct {
-	CargoWeightLbs     int64    `json:"cargo_weight_lbs"`
-	MinAggregateWLLLbs int64    `json:"min_aggregate_wll_lbs"`
-	Straps             []Strap  `json:"straps"`
-	RecommendedStrap   string   `json:"recommended_strap"`
-	Notes              []string `json:"notes"`
+	CargoWeightLbs     int64   `json:"cargo_weight_lbs"`
+	MinAggregateWLLLbs int64   `json:"min_aggregate_wll_lbs"`
+	Straps             []Strap `json:"straps"`
+	RecommendedStrap   string  `json:"recommended_strap"`
+
+	// Rule basis (T2-7) — which jurisdiction ruleset produced this plan.
+	Jurisdiction     string  `json:"jurisdiction"`
+	RulesetName      string  `json:"ruleset_name"`
+	RuleBasis        string  `json:"rule_basis"`
+	RequiredTieDowns int     `json:"required_tie_downs"` // ruleset minimum (Straps may add for WLL)
+	AnchorSpacingIn  float64 `json:"anchor_spacing_in,omitempty"`
+
+	Notes []string `json:"notes"`
 }

@@ -14,6 +14,9 @@ type Stop struct {
 	Lng       float64 `json:"lng"`
 	Address   string  `json:"address,omitempty"`
 	WeightLbs float64 `json:"weight_lbs"`
+	// VolumeCuFt is the stop's total cargo bounding volume, used by the workflow
+	// assignment step to cap a truck by bed space as well as by weight (T2-2).
+	VolumeCuFt float64 `json:"volume_cuft,omitempty"`
 }
 
 // Load is a single truck's assignment: its vehicle, capacity, sequenced stops

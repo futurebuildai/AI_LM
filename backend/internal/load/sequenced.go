@@ -174,6 +174,7 @@ func SolveSequencedBundles(v Vehicle, stops []StopItems) Plan {
 	}
 
 	computeAxleLoads(&plan, v)
+	computeVolume(&plan, v)
 	for _, p := range plan.Placements {
 		if top := p.Z + p.HeightIn; top > plan.MaxLoadHeightIn {
 			plan.MaxLoadHeightIn = top

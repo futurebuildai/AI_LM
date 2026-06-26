@@ -27,10 +27,19 @@ type Service struct {
 	repo     *Repository
 	profiles profileProvider
 	solver   Solver
+	// securement policy inputs (T1-5/T2-7) applied to the solved vehicle.
+	securementJurisdiction string
+	anchorSpacingIn        float64
 }
 
-func NewService(repo *Repository, profiles profileProvider, solver Solver) *Service {
-	return &Service{repo: repo, profiles: profiles, solver: solver}
+func NewService(repo *Repository, profiles profileProvider, solver Solver, securementJurisdiction string, anchorSpacingIn float64) *Service {
+	return &Service{
+		repo:                   repo,
+		profiles:               profiles,
+		solver:                 solver,
+		securementJurisdiction: securementJurisdiction,
+		anchorSpacingIn:        anchorSpacingIn,
+	}
 }
 
 // Optimize computes and persists a load plan for the request.
@@ -48,6 +57,8 @@ func (s *Service) Optimize(ctx context.Context, req OptimizeRequest) (*Plan, err
 	}
 
 	vehicle := toSolverVehicle(profile)
+	vehicle.SecurementJurisdiction = s.securementJurisdiction
+	vehicle.AnchorSpacingIn = s.anchorSpacingIn
 	plan := s.solver.Solve(vehicle, req.Items)
 	plan.GableRouteID = req.RouteID
 	plan.GableDeliveryID = req.DeliveryID

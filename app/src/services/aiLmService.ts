@@ -142,6 +142,12 @@ export interface Securement {
   min_aggregate_wll_lbs: number;
   straps: Strap[];
   recommended_strap: string;
+  // Jurisdiction rule basis (T2-7).
+  jurisdiction: string;
+  ruleset_name: string;
+  rule_basis: string;
+  required_tie_downs: number;
+  anchor_spacing_in?: number;
   notes: string[];
 }
 
@@ -157,6 +163,12 @@ export interface LoadPlan {
   gvw_status: 'PASS' | 'WARN' | 'FAIL';
   unplaced: string[];
   max_load_height_in?: number;
+  // Volume budget (T2-2).
+  bed_volume_cuft?: number;
+  usable_volume_cuft?: number;
+  cargo_volume_cuft?: number;
+  volume_utilization?: number;
+  volume_status?: 'PASS' | 'WARN' | 'FAIL';
   securement?: Securement;
   created_at: string;
 }
@@ -249,6 +261,15 @@ export interface RouteCheckResult {
 }
 
 // ---- workflow (guided end-to-end dispatch) ------------------------------
+export interface DimOverride {
+  length_in: number;
+  width_in: number;
+  height_in: number;
+  tolerance_pct?: number;
+  source?: string; // MEASURED / AVERAGE
+  note?: string;
+}
+
 export interface AnalyzedLine {
   product_id: string;
   sku: string;
@@ -262,6 +283,7 @@ export interface AnalyzedLine {
   has_geometry: boolean;
   line_weight_lbs: number;
   line_volume_cuft: number;
+  dim_override?: DimOverride;
 }
 
 export interface OrderAnalysis {
@@ -317,6 +339,24 @@ export interface ComplianceReview {
   checked_height_in: number;
 }
 
+// Yard proof-of-load + sign-off (T1-6).
+export interface ProofAttachment {
+  url: string;
+  kind: string; // PHOTO / VIDEO
+  caption?: string;
+  added_by?: string;
+  added_at: string;
+}
+
+export interface LoadProof {
+  attachments: ProofAttachment[];
+  signed_off: boolean;
+  signed_by?: string;
+  signed_role?: string;
+  signed_at?: string;
+  note?: string;
+}
+
 export interface TruckLoad {
   vehicle_id: string;
   vehicle_name: string;
@@ -330,9 +370,30 @@ export interface TruckLoad {
   bed?: { length_in: number; width_in: number; height_in: number };
   load_plan?: LoadPlan;
   compliance?: ComplianceReview;
+  proof?: LoadProof;
 }
 
 export type WorkflowStatus = 'ANALYZED' | 'ASSIGNED' | 'PACKED' | 'REVIEWED' | 'PUSHED';
+
+// Scheduled re-optimization lock state (T2-3).
+export interface PlanLock {
+  locked: boolean;
+  window?: 'MORNING' | 'AFTERNOON' | 'CUSTOM';
+  lock_at?: string;
+  locked_by?: string;
+  locked_at?: string;
+  reason?: string;
+}
+
+export interface LateAdd {
+  order_id: string;
+  customer_name?: string;
+  status: 'PENDING' | 'APPROVED' | 'REJECTED';
+  requested_by?: string;
+  requested_at: string;
+  resolved_by?: string;
+  note?: string;
+}
 
 export interface WorkflowPlan {
   id: string;
@@ -343,6 +404,8 @@ export interface WorkflowPlan {
   orders: OrderAnalysis[];
   loads: TruckLoad[];
   unassigned_orders: WorkflowStop[];
+  lock?: PlanLock;
+  late_adds?: LateAdd[];
   created_at: string;
   updated_at: string;
 }
@@ -437,26 +500,107 @@ class AiLmService {
   getWorkflow(id: string): Promise<WorkflowPlan> {
     return fetchWithAuth(`${BASE}/workflow/plans/${id}`).then((r) => jsonOrThrow(r));
   }
-  assignWorkflow(id: string): Promise<WorkflowPlan> {
-    return fetchWithAuth(`${BASE}/workflow/plans/${id}/assign`, { method: 'POST' }).then((r) =>
-      jsonOrThrow(r),
-    );
+  // override authorizes a reshuffle on a locked run (T2-3).
+  assignWorkflow(id: string, override = false, approvedBy = ''): Promise<WorkflowPlan> {
+    return fetchWithAuth(`${BASE}/workflow/plans/${id}/assign`, {
+      method: 'POST',
+      body: JSON.stringify({ override, approved_by: approvedBy }),
+    }).then((r) => jsonOrThrow(r));
   }
   packWorkflow(id: string): Promise<WorkflowPlan> {
     return fetchWithAuth(`${BASE}/workflow/plans/${id}/pack`, { method: 'POST' }).then((r) =>
       jsonOrThrow(r),
     );
   }
-  resequenceWorkflow(id: string, vehicleId: string, orderIds: string[]): Promise<WorkflowPlan> {
+  resequenceWorkflow(
+    id: string,
+    vehicleId: string,
+    orderIds: string[],
+    override = false,
+    approvedBy = '',
+  ): Promise<WorkflowPlan> {
     return fetchWithAuth(`${BASE}/workflow/plans/${id}/loads/${vehicleId}/sequence`, {
       method: 'PUT',
-      body: JSON.stringify({ order_ids: orderIds }),
+      body: JSON.stringify({ order_ids: orderIds, override, approved_by: approvedBy }),
     }).then((r) => jsonOrThrow(r));
   }
-  setStopPriority(id: string, orderId: string, priority: boolean): Promise<WorkflowPlan> {
+  setStopPriority(
+    id: string,
+    orderId: string,
+    priority: boolean,
+    override = false,
+    approvedBy = '',
+  ): Promise<WorkflowPlan> {
     return fetchWithAuth(`${BASE}/workflow/plans/${id}/stops/${orderId}/priority`, {
       method: 'PUT',
-      body: JSON.stringify({ priority }),
+      body: JSON.stringify({ priority, override, approved_by: approvedBy }),
+    }).then((r) => jsonOrThrow(r));
+  }
+  // T2-2: per-order dimension override for a variable-dimension SKU.
+  setLineDimensions(
+    id: string,
+    orderId: string,
+    body: { product_id?: string; sku?: string } & DimOverride,
+  ): Promise<WorkflowPlan> {
+    return fetchWithAuth(`${BASE}/workflow/plans/${id}/orders/${orderId}/dimensions`, {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }).then((r) => jsonOrThrow(r));
+  }
+  // T1-6: yard proof-of-load + sign-off.
+  attachProof(
+    id: string,
+    vehicleId: string,
+    body: { url: string; kind?: string; caption?: string; added_by?: string },
+  ): Promise<WorkflowPlan> {
+    return fetchWithAuth(`${BASE}/workflow/plans/${id}/loads/${vehicleId}/proof`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }).then((r) => jsonOrThrow(r));
+  }
+  signOffLoad(
+    id: string,
+    vehicleId: string,
+    body: { signed_by: string; role?: string; note?: string },
+  ): Promise<WorkflowPlan> {
+    return fetchWithAuth(`${BASE}/workflow/plans/${id}/loads/${vehicleId}/sign-off`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }).then((r) => jsonOrThrow(r));
+  }
+  // T2-3: lock states + late-add escalation.
+  lockPlan(
+    id: string,
+    body: { locked?: boolean; window?: string; lock_at?: string; reason?: string; locked_by?: string },
+  ): Promise<WorkflowPlan> {
+    return fetchWithAuth(`${BASE}/workflow/plans/${id}/lock`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }).then((r) => jsonOrThrow(r));
+  }
+  unlockPlan(id: string, reason = '', by = ''): Promise<WorkflowPlan> {
+    return fetchWithAuth(`${BASE}/workflow/plans/${id}/unlock`, {
+      method: 'POST',
+      body: JSON.stringify({ reason, locked_by: by }),
+    }).then((r) => jsonOrThrow(r));
+  }
+  addLateOrder(
+    id: string,
+    body: { order_id: string; requested_by?: string; note?: string },
+  ): Promise<WorkflowPlan> {
+    return fetchWithAuth(`${BASE}/workflow/plans/${id}/late-adds`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }).then((r) => jsonOrThrow(r));
+  }
+  resolveLateAdd(
+    id: string,
+    orderId: string,
+    body: { reject?: boolean; approved_by?: string },
+  ): Promise<WorkflowPlan> {
+    return fetchWithAuth(`${BASE}/workflow/plans/${id}/late-adds/${orderId}/resolve`, {
+      method: 'POST',
+      body: JSON.stringify(body),
     }).then((r) => jsonOrThrow(r));
   }
   reviewWorkflow(id: string): Promise<WorkflowPlan> {

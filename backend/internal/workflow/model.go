@@ -41,18 +41,35 @@ const (
 // AnalyzedLine is one order line resolved against the effective catalog
 // (override → PIM → fallback geometry) with derived per-line totals.
 type AnalyzedLine struct {
-	ProductID       string  `json:"product_id"`
-	SKU             string  `json:"sku"`
-	Name            string  `json:"name,omitempty"`
-	Quantity        float64 `json:"quantity"`
-	UnitWeightLbs   float64 `json:"unit_weight_lbs"`
-	UnitLengthIn    float64 `json:"unit_length_in"`
-	UnitWidthIn     float64 `json:"unit_width_in"`
-	UnitHeightIn    float64 `json:"unit_height_in"`
-	Stackable       bool    `json:"stackable"`
-	HasGeometry     bool    `json:"has_geometry"`
-	LineWeightLbs   float64 `json:"line_weight_lbs"`
-	LineVolumeCuFt  float64 `json:"line_volume_cuft"`
+	ProductID      string       `json:"product_id"`
+	SKU            string       `json:"sku"`
+	Name           string       `json:"name,omitempty"`
+	Quantity       float64      `json:"quantity"`
+	UnitWeightLbs  float64      `json:"unit_weight_lbs"`
+	UnitLengthIn   float64      `json:"unit_length_in"`
+	UnitWidthIn    float64      `json:"unit_width_in"`
+	UnitHeightIn   float64      `json:"unit_height_in"`
+	Stackable      bool         `json:"stackable"`
+	HasGeometry    bool         `json:"has_geometry"`
+	LineWeightLbs  float64      `json:"line_weight_lbs"`
+	LineVolumeCuFt float64      `json:"line_volume_cuft"`
+	// DimOverride records a per-order dimension override for a variable-
+	// dimension SKU (one whose size varies by order, e.g. natural-stone steps).
+	// When present the unit L/W/H above are its resolved (upper-bound) dims.
+	DimOverride *DimOverride `json:"dim_override,omitempty"`
+}
+
+// DimOverride is a per-order/per-line dimension override (T2-2). For a
+// variable-dimension SKU the dispatcher supplies this order's actual size; when
+// only an average is known a tolerance grows it to a planning upper bound so the
+// digital twin + packing reserve room for the largest likely piece.
+type DimOverride struct {
+	LengthIn     float64 `json:"length_in"`
+	WidthIn      float64 `json:"width_in"`
+	HeightIn     float64 `json:"height_in"`
+	TolerancePct float64 `json:"tolerance_pct,omitempty"` // applied to reach the upper bound
+	Source       string  `json:"source,omitempty"`        // MEASURED / AVERAGE
+	Note         string  `json:"note,omitempty"`
 }
 
 // OrderAnalysis is the deep analysis of one ingested order.
@@ -130,6 +147,75 @@ type TruckLoad struct {
 	Bed               *BedDims          `json:"bed,omitempty"`
 	LoadPlan          *load.Plan        `json:"load_plan,omitempty"`
 	Compliance        *ComplianceReview `json:"compliance,omitempty"`
+	// Proof is the yard proof-of-load + sign-off (T1-6). A truck cannot be
+	// pushed (leave the yard) until Proof has at least one attachment and a
+	// sign-off.
+	Proof *LoadProof `json:"proof,omitempty"`
+}
+
+// ProofAttachment is one yard photo/video reference for a packed load (T1-6).
+// A demo-appropriate store: a URL + metadata, persisted in the plan JSONB.
+type ProofAttachment struct {
+	URL     string    `json:"url"`
+	Kind    string    `json:"kind"` // PHOTO / VIDEO
+	Caption string    `json:"caption,omitempty"`
+	AddedBy string    `json:"added_by,omitempty"`
+	AddedAt time.Time `json:"added_at"`
+}
+
+// LoadProof is the yard proof-of-load + sign-off for one truck (T1-6).
+type LoadProof struct {
+	Attachments []ProofAttachment `json:"attachments"`
+	SignedOff   bool              `json:"signed_off"`
+	SignedBy    string            `json:"signed_by,omitempty"`
+	SignedRole  string            `json:"signed_role,omitempty"`
+	SignedAt    *time.Time        `json:"signed_at,omitempty"`
+	Note        string            `json:"note,omitempty"`
+}
+
+// Ready reports whether the load satisfies the depart gate: at least one proof
+// attachment and a sign-off.
+func (p *LoadProof) Ready() bool {
+	return p != nil && len(p.Attachments) > 0 && p.SignedOff
+}
+
+// Lock window codes (T2-3).
+const (
+	LockWindowMorning   = "MORNING"
+	LockWindowAfternoon = "AFTERNOON"
+	LockWindowCustom    = "CUSTOM"
+)
+
+// Late-add statuses (T2-3).
+const (
+	LateAddPending  = "PENDING"
+	LateAddApproved = "APPROVED"
+	LateAddRejected = "REJECTED"
+)
+
+// PlanLock models a run's scheduled-lock state (T2-3). A locked run is not
+// silently re-shuffled: assign / resequence / priority changes require an
+// explicit override (manual approval), and a late same-day order add is queued
+// for approval instead of reshuffling. Locked is the effective state; a Window +
+// LockAt schedule auto-locks the run once that time passes on the plan date.
+type PlanLock struct {
+	Locked   bool       `json:"locked"`
+	Window   string     `json:"window,omitempty"`  // MORNING / AFTERNOON / CUSTOM
+	LockAt   string     `json:"lock_at,omitempty"` // HH:MM the window auto-locks
+	LockedBy string     `json:"locked_by,omitempty"`
+	LockedAt *time.Time `json:"locked_at,omitempty"`
+	Reason   string     `json:"reason,omitempty"`
+}
+
+// LateAdd is a same-day order added to a locked run, awaiting approval (T2-3).
+type LateAdd struct {
+	OrderID      string    `json:"order_id"`
+	CustomerName string    `json:"customer_name,omitempty"`
+	Status       string    `json:"status"` // PENDING / APPROVED / REJECTED
+	RequestedBy  string    `json:"requested_by,omitempty"`
+	RequestedAt  time.Time `json:"requested_at"`
+	ResolvedBy   string    `json:"resolved_by,omitempty"`
+	Note         string    `json:"note,omitempty"`
 }
 
 // Plan is one end-to-end workflow run for a delivery date.
@@ -142,6 +228,8 @@ type Plan struct {
 	Orders           []OrderAnalysis `json:"orders"`
 	Loads            []TruckLoad     `json:"loads"`
 	UnassignedOrders []Stop          `json:"unassigned_orders"`
+	Lock             *PlanLock       `json:"lock,omitempty"`
+	LateAdds         []LateAdd       `json:"late_adds,omitempty"`
 	CreatedAt        time.Time       `json:"created_at"`
 	UpdatedAt        time.Time       `json:"updated_at"`
 }
@@ -154,14 +242,81 @@ type IngestRequest struct {
 }
 
 // ResequenceRequest manually reorders one truck's stops (triggers a re-pack).
+// Override authorizes the change on a locked run (T2-3).
 type ResequenceRequest struct {
-	OrderIDs []string `json:"order_ids"`
+	OrderIDs   []string `json:"order_ids"`
+	Override   bool     `json:"override,omitempty"`
+	ApprovedBy string   `json:"approved_by,omitempty"`
 }
 
 // PriorityRequest toggles an order's deliver-first flag (dealer override T2-1),
-// re-sequencing (and re-packing) the affected truck.
+// re-sequencing (and re-packing) the affected truck. Override authorizes the
+// change on a locked run (T2-3).
 type PriorityRequest struct {
-	Priority bool `json:"priority"`
+	Priority   bool   `json:"priority"`
+	Override   bool   `json:"override,omitempty"`
+	ApprovedBy string `json:"approved_by,omitempty"`
+}
+
+// AssignRequest runs (or re-runs) truck assignment. Override authorizes a
+// re-assignment on a locked run (T2-3); the body may be empty.
+type AssignRequest struct {
+	Override   bool   `json:"override,omitempty"`
+	ApprovedBy string `json:"approved_by,omitempty"`
+}
+
+// ProofRequest attaches one yard photo/video reference to a packed load (T1-6).
+type ProofRequest struct {
+	URL     string `json:"url"`
+	Kind    string `json:"kind,omitempty"` // PHOTO / VIDEO (default PHOTO)
+	Caption string `json:"caption,omitempty"`
+	AddedBy string `json:"added_by,omitempty"`
+}
+
+// SignOffRequest records the yard sign-off that releases a load to depart (T1-6).
+type SignOffRequest struct {
+	SignedBy string `json:"signed_by"`
+	Role     string `json:"role,omitempty"`
+	Note     string `json:"note,omitempty"`
+}
+
+// LockRequest sets a run's lock / scheduled-lock state (T2-3). Locked is a
+// pointer so an omitted field defaults to an immediate lock; pass false with a
+// Window to schedule a future auto-lock without locking now.
+type LockRequest struct {
+	Locked   *bool  `json:"locked,omitempty"`
+	Window   string `json:"window,omitempty"`  // MORNING / AFTERNOON / CUSTOM
+	LockAt   string `json:"lock_at,omitempty"` // HH:MM (required for CUSTOM)
+	Reason   string `json:"reason,omitempty"`
+	LockedBy string `json:"locked_by,omitempty"`
+}
+
+// LateAddRequest queues a late same-day order onto a run (T2-3). When the run is
+// locked it is recorded PENDING (needs approval) instead of reshuffling.
+type LateAddRequest struct {
+	OrderID     string `json:"order_id"`
+	RequestedBy string `json:"requested_by,omitempty"`
+	Note        string `json:"note,omitempty"`
+}
+
+// LateAddApproveRequest approves (or rejects) a queued late add (T2-3).
+type LateAddApproveRequest struct {
+	Reject     bool   `json:"reject,omitempty"`
+	ApprovedBy string `json:"approved_by,omitempty"`
+}
+
+// DimensionOverrideRequest sets this order's dimensions for a variable-dimension
+// SKU (T2-2). The line is matched by ProductID when given, else by SKU. L/W/H
+// must be positive; re-ingesting the date restores the catalog geometry.
+type DimensionOverrideRequest struct {
+	ProductID    string  `json:"product_id,omitempty"`
+	SKU          string  `json:"sku,omitempty"`
+	LengthIn     float64 `json:"length_in"`
+	WidthIn      float64 `json:"width_in"`
+	HeightIn     float64 `json:"height_in"`
+	TolerancePct float64 `json:"tolerance_pct,omitempty"`
+	Source       string  `json:"source,omitempty"` // MEASURED / AVERAGE
+	Note         string  `json:"note,omitempty"`
 }
 
 // Briefing is the LLM-generated dispatch briefing for a plan. When AI is not

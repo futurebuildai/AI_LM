@@ -60,6 +60,16 @@ type aiBriefer interface {
 	Generate(ctx context.Context, systemPrompt, userPrompt string, maxTokens int) (string, error)
 }
 
+// Config carries the workflow's tunable policy inputs (securement jurisdiction +
+// anchor pitch for T1-5/T2-7, scheduled lock windows for T2-3). Zero values fall
+// back to sensible defaults so the service runs unconfigured.
+type Config struct {
+	SecurementJurisdiction    string
+	SecurementAnchorSpacingIn float64
+	LockMorningAt             string
+	LockAfternoonAt           string
+}
+
 // Service orchestrates the five-step dispatch workflow.
 type Service struct {
 	repo    *Repository
@@ -68,20 +78,31 @@ type Service struct {
 	fleet   fleetProfiles
 	checker routeChecker
 	ai      aiBriefer
+	cfg     Config
 }
 
-func NewService(repo *Repository, g gableSource, c catalogSource, f fleetProfiles, rc routeChecker, briefer aiBriefer) *Service {
-	return &Service{repo: repo, gable: g, catalog: c, fleet: f, checker: rc, ai: briefer}
+func NewService(repo *Repository, g gableSource, c catalogSource, f fleetProfiles, rc routeChecker, briefer aiBriefer, cfg Config) *Service {
+	return &Service{repo: repo, gable: g, catalog: c, fleet: f, checker: rc, ai: briefer, cfg: cfg}
 }
 
-// Get returns a plan by id.
+// Get returns a plan by id, with any scheduled lock evaluated for display.
 func (s *Service) Get(ctx context.Context, id string) (*Plan, error) {
-	return s.repo.Get(ctx, id)
+	p, err := s.repo.Get(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	applyLockSchedule(p, time.Now())
+	return p, nil
 }
 
 // GetLatestForDate returns the most recent plan for a date.
 func (s *Service) GetLatestForDate(ctx context.Context, date string) (*Plan, error) {
-	return s.repo.GetLatestForDate(ctx, date)
+	p, err := s.repo.GetLatestForDate(ctx, date)
+	if err != nil {
+		return nil, err
+	}
+	applyLockSchedule(p, time.Now())
+	return p, nil
 }
 
 // --- Step 1+2: ingest + deep analysis ---------------------------------------
@@ -156,11 +177,7 @@ func analyzeOrder(o gable.Order, byProduct map[string]catalog.EffectiveProduct) 
 		Issues:       []string{},
 		Routable:     o.Latitude != nil && o.Longitude != nil,
 	}
-	if !a.Routable {
-		a.Issues = append(a.Issues, "no delivery geolocation — cannot route")
-	}
 
-	missingGeometry := 0
 	for _, l := range o.Lines {
 		line := AnalyzedLine{
 			ProductID:     l.ProductID,
@@ -179,25 +196,42 @@ func analyzeOrder(o gable.Order, byProduct map[string]catalog.EffectiveProduct) 
 				line.UnitWeightLbs = ep.WeightLbs
 			}
 		}
-		if !line.HasGeometry {
-			missingGeometry++
-		}
-		line.LineWeightLbs = round2(line.UnitWeightLbs * l.Quantity)
-		line.LineVolumeCuFt = round2(line.UnitLengthIn * line.UnitWidthIn * line.UnitHeightIn / 1728.0 * l.Quantity)
-
 		a.Lines = append(a.Lines, line)
-		a.TotalWeightLbs += line.LineWeightLbs
-		a.TotalVolumeCuFt += line.LineVolumeCuFt
+	}
+	a.recomputeTotals()
+	return a
+}
+
+// defaultDimTolerancePct grows an "average" variable-dimension override to a
+// planning upper bound when the dispatcher does not supply an explicit tolerance.
+const defaultDimTolerancePct = 15.0
+
+// recomputeTotals re-derives every per-line and per-order metric (weight,
+// volume, max length, piece count), the shape profile, and the issue list from
+// the current line geometry. Shared by ingest analysis and the dimension-
+// override path so both stay consistent.
+func (a *OrderAnalysis) recomputeTotals() {
+	a.TotalWeightLbs = 0
+	a.TotalVolumeCuFt = 0
+	a.MaxLengthIn = 0
+	a.PieceCount = 0
+	missingGeometry := 0
+	for i := range a.Lines {
+		l := &a.Lines[i]
+		l.LineWeightLbs = round2(l.UnitWeightLbs * l.Quantity)
+		l.LineVolumeCuFt = round2(l.UnitLengthIn * l.UnitWidthIn * l.UnitHeightIn / 1728.0 * l.Quantity)
+		a.TotalWeightLbs += l.LineWeightLbs
+		a.TotalVolumeCuFt += l.LineVolumeCuFt
 		a.PieceCount += int(math.Round(l.Quantity))
-		if line.UnitLengthIn > a.MaxLengthIn {
-			a.MaxLengthIn = line.UnitLengthIn
+		if l.UnitLengthIn > a.MaxLengthIn {
+			a.MaxLengthIn = l.UnitLengthIn
+		}
+		if !l.HasGeometry {
+			missingGeometry++
 		}
 	}
 	a.TotalWeightLbs = round2(a.TotalWeightLbs)
 	a.TotalVolumeCuFt = round2(a.TotalVolumeCuFt)
-	if missingGeometry > 0 {
-		a.Issues = append(a.Issues, fmt.Sprintf("%d line(s) missing digital-twin geometry", missingGeometry))
-	}
 
 	switch {
 	case a.MaxLengthIn >= 192:
@@ -207,16 +241,27 @@ func analyzeOrder(o gable.Order, byProduct map[string]catalog.EffectiveProduct) 
 	default:
 		a.ShapeProfile = ShapeMixed
 	}
-	return a
+
+	a.Issues = []string{}
+	if !a.Routable {
+		a.Issues = append(a.Issues, "no delivery geolocation — cannot route")
+	}
+	if missingGeometry > 0 {
+		a.Issues = append(a.Issues, fmt.Sprintf("%d line(s) missing digital-twin geometry", missingGeometry))
+	}
 }
 
 // --- Step 3: assign orders to trucks + sequence routes -----------------------
 
-// Assign splits the analyzed orders across the live fleet (CVRP by weight) and
-// sequences each truck's route from the depot.
-func (s *Service) Assign(ctx context.Context, id string) (*Plan, error) {
+// Assign splits the analyzed orders across the live fleet (CVRP by weight +
+// volume) and sequences each truck's route from the depot. On a locked run it
+// refuses to reshuffle unless override (manual approval) is supplied (T2-3).
+func (s *Service) Assign(ctx context.Context, id string, override bool, approvedBy string) (*Plan, error) {
 	p, err := s.repo.Get(ctx, id)
 	if err != nil {
+		return nil, err
+	}
+	if err := gateReshuffle(p, override, approvedBy, "re-assigning trucks"); err != nil {
 		return nil, err
 	}
 
@@ -227,11 +272,12 @@ func (s *Service) Assign(ctx context.Context, id string) (*Plan, error) {
 			continue
 		}
 		rstops = append(rstops, routing.Stop{
-			OrderID:   a.OrderID,
-			Lat:       *a.Lat,
-			Lng:       *a.Lng,
-			Address:   a.Address,
-			WeightLbs: a.TotalWeightLbs,
+			OrderID:    a.OrderID,
+			Lat:        *a.Lat,
+			Lng:        *a.Lng,
+			Address:    a.Address,
+			WeightLbs:  a.TotalWeightLbs,
+			VolumeCuFt: a.TotalVolumeCuFt,
 		})
 	}
 
@@ -244,7 +290,15 @@ func (s *Service) Assign(ctx context.Context, id string) (*Plan, error) {
 		return nil, fmt.Errorf("fetch drivers: %w", err)
 	}
 
-	rloads, unassigned := sweepAssign(vehicles, rstops, p.DepotLat, p.DepotLng)
+	// Usable bed volume per vehicle (T2-2) — a stored fleet profile when one
+	// exists, else the type-based default. Lets the assignment cap a truck by
+	// space as well as weight without provisioning a profile for every vehicle.
+	volCapByVehicle := make(map[string]float64, len(vehicles))
+	for _, v := range vehicles {
+		volCapByVehicle[v.ID] = s.usableBedVolume(ctx, v)
+	}
+
+	rloads, unassigned := sweepAssign(vehicles, rstops, p.DepotLat, p.DepotLng, volCapByVehicle)
 	routing.AssignDrivers(drivers, rloads)
 
 	priSet := prioritySet(p)
@@ -349,6 +403,8 @@ func (s *Service) packLoad(ctx context.Context, p *Plan, l *TruckLoad, vehiclesB
 	}
 
 	v := toSolverVehicle(profile)
+	v.SecurementJurisdiction = s.cfg.SecurementJurisdiction
+	v.AnchorSpacingIn = s.cfg.SecurementAnchorSpacingIn
 	if maxHeightIn > 0 && maxHeightIn < v.BedHeightIn {
 		v.BedHeightIn = maxHeightIn
 	}
@@ -360,9 +416,13 @@ func (s *Service) packLoad(ctx context.Context, p *Plan, l *TruckLoad, vehiclesB
 
 // Resequence manually reorders one truck's stops (the dispatcher's packing-
 // stage adjustment), then re-packs that truck and recomputes its route totals.
-func (s *Service) Resequence(ctx context.Context, id, vehicleID string, orderIDs []string) (*Plan, error) {
+// On a locked run it requires override (manual approval) (T2-3).
+func (s *Service) Resequence(ctx context.Context, id, vehicleID string, orderIDs []string, override bool, approvedBy string) (*Plan, error) {
 	p, err := s.repo.Get(ctx, id)
 	if err != nil {
+		return nil, err
+	}
+	if err := gateReshuffle(p, override, approvedBy, "re-sequencing a route"); err != nil {
 		return nil, err
 	}
 
@@ -433,6 +493,7 @@ func (s *Service) Push(ctx context.Context, id string) (*Plan, error) {
 	}
 
 	var failing []string
+	var unsigned []string
 	for _, l := range p.Loads {
 		if l.LoadPlan == nil {
 			return nil, fmt.Errorf("truck %s is not packed yet", l.VehicleName)
@@ -443,9 +504,17 @@ func (s *Service) Push(ctx context.Context, id string) (*Plan, error) {
 		if l.Compliance.Status == "FAIL" {
 			failing = append(failing, l.VehicleName)
 		}
+		// Yard proof-of-load + sign-off gate (T1-6): no truck leaves the yard
+		// without photo/video proof and a sign-off.
+		if !l.Proof.Ready() {
+			unsigned = append(unsigned, l.VehicleName)
+		}
 	}
 	if len(failing) > 0 {
 		return nil, fmt.Errorf("compliance FAIL on: %s — resolve before pushing", strings.Join(failing, ", "))
+	}
+	if len(unsigned) > 0 {
+		return nil, fmt.Errorf("yard proof + sign-off required before depart on: %s", strings.Join(unsigned, ", "))
 	}
 
 	for _, l := range p.Loads {
@@ -519,6 +588,7 @@ func buildManifest(p *Plan, l TruckLoad) map[string]any {
 		"sku_names":          skuNames,
 		"securement":         l.LoadPlan.Securement,
 		"compliance":         l.Compliance,
+		"proof":              l.Proof,
 	}
 }
 
@@ -602,9 +672,12 @@ func sequenceWithPriority(depotLat, depotLng float64, rstops []routing.Stop, isP
 // re-sequences (and re-packs) the truck carrying it, pinning priority stops to
 // the front of the route. It is safe to call at any stage; later-stage
 // artifacts (review/push) are invalidated so the dispatcher re-runs them.
-func (s *Service) SetPriority(ctx context.Context, id, orderID string, priority bool) (*Plan, error) {
+func (s *Service) SetPriority(ctx context.Context, id, orderID string, priority bool, override bool, approvedBy string) (*Plan, error) {
 	p, err := s.repo.Get(ctx, id)
 	if err != nil {
+		return nil, err
+	}
+	if err := gateReshuffle(p, override, approvedBy, "changing delivery priority"); err != nil {
 		return nil, err
 	}
 
@@ -676,6 +749,115 @@ func (s *Service) SetPriority(ctx context.Context, id, orderID string, priority 
 	return p, nil
 }
 
+// SetLineDimensions applies a per-order dimension override for a variable-
+// dimension SKU (T2-2). When only an average is known a tolerance grows the
+// dims to a planning upper bound. The override feeds the digital twin + packing;
+// the truck carrying the order is re-packed and later-stage artifacts cleared.
+func (s *Service) SetLineDimensions(ctx context.Context, id, orderID string, req DimensionOverrideRequest) (*Plan, error) {
+	if req.ProductID == "" && req.SKU == "" {
+		return nil, fmt.Errorf("product_id or sku is required to target a line")
+	}
+	if req.LengthIn <= 0 || req.WidthIn <= 0 || req.HeightIn <= 0 {
+		return nil, fmt.Errorf("length_in, width_in and height_in must be positive")
+	}
+
+	p, err := s.repo.Get(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+
+	var order *OrderAnalysis
+	for i := range p.Orders {
+		if p.Orders[i].OrderID == orderID {
+			order = &p.Orders[i]
+			break
+		}
+	}
+	if order == nil {
+		return nil, fmt.Errorf("order %s is not part of this plan", orderID)
+	}
+
+	tol := req.TolerancePct
+	if tol == 0 && strings.EqualFold(req.Source, "AVERAGE") {
+		tol = defaultDimTolerancePct
+	}
+	f := 1 + tol/100
+
+	matched := 0
+	for i := range order.Lines {
+		l := &order.Lines[i]
+		if req.ProductID != "" {
+			if l.ProductID != req.ProductID {
+				continue
+			}
+		} else if !strings.EqualFold(l.SKU, req.SKU) {
+			continue
+		}
+		l.UnitLengthIn = round2(req.LengthIn * f)
+		l.UnitWidthIn = round2(req.WidthIn * f)
+		l.UnitHeightIn = round2(req.HeightIn * f)
+		l.HasGeometry = true
+		l.DimOverride = &DimOverride{
+			LengthIn:     req.LengthIn,
+			WidthIn:      req.WidthIn,
+			HeightIn:     req.HeightIn,
+			TolerancePct: tol,
+			Source:       req.Source,
+			Note:         req.Note,
+		}
+		matched++
+	}
+	if matched == 0 {
+		return nil, fmt.Errorf("no line in order %s matched the override target", orderID)
+	}
+
+	order.recomputeTotals()
+	if err := s.repackOrderTruck(ctx, p, orderID); err != nil {
+		return nil, err
+	}
+	if err := s.repo.Update(ctx, p); err != nil {
+		return nil, err
+	}
+	return p, nil
+}
+
+// repackOrderTruck re-packs the truck carrying orderID (if assigned + packed)
+// and invalidates any later-stage (review/push) artifacts so the dispatcher
+// re-runs them. A no-op when the order is unassigned or not yet packed.
+func (s *Service) repackOrderTruck(ctx context.Context, p *Plan, orderID string) error {
+	var target *TruckLoad
+	for i := range p.Loads {
+		for _, st := range p.Loads[i].Stops {
+			if st.OrderID == orderID {
+				target = &p.Loads[i]
+				break
+			}
+		}
+		if target != nil {
+			break
+		}
+	}
+	if target == nil || target.LoadPlan == nil {
+		return nil
+	}
+
+	vehicles, err := s.gable.ListVehicles(ctx)
+	if err != nil {
+		return fmt.Errorf("fetch vehicles: %w", err)
+	}
+	vehiclesByID := make(map[string]gable.Vehicle, len(vehicles))
+	for _, v := range vehicles {
+		vehiclesByID[v.ID] = v
+	}
+	if err := s.packLoad(ctx, p, target, vehiclesByID, 0); err != nil {
+		return err
+	}
+	if p.Status == StatusReviewed || p.Status == StatusPushed {
+		p.Status = StatusPacked
+	}
+	return nil
+}
+
 // routeTotals computes path distance/duration for a fixed stop order.
 func routeTotals(depotLat, depotLng float64, stops []Stop) (float64, float64) {
 	const avgSpeedMph = 35.0
@@ -686,6 +868,17 @@ func routeTotals(depotLat, depotLng float64, stops []Stop) (float64, float64) {
 		pLat, pLng = st.Lat, st.Lng
 	}
 	return round2(total), round2(total / avgSpeedMph * 60.0)
+}
+
+// usableBedVolume returns a vehicle's usable bed volume (ft³) for the
+// assignment volume cap: the stored fleet profile's bed when one exists, else
+// the type-based default. Read-only — it never provisions a profile.
+func (s *Service) usableBedVolume(ctx context.Context, v gable.Vehicle) float64 {
+	if prof, err := s.fleet.GetProfile(ctx, v.ID); err == nil && prof != nil {
+		return load.UsableBedVolumeCuFt(prof.BedLengthIn, prof.BedWidthIn, prof.BedHeightIn)
+	}
+	in := defaultProfileInput(v)
+	return load.UsableBedVolumeCuFt(in.BedLengthIn, in.BedWidthIn, in.BedHeightIn)
 }
 
 // ensureProfile fetches the truck's fleet profile, auto-provisioning a
