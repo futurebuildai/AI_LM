@@ -69,10 +69,15 @@ type OrderAnalysis struct {
 	PieceCount      int            `json:"piece_count"`
 	ShapeProfile    string         `json:"shape_profile"`
 	Routable        bool           `json:"routable"`
-	Issues          []string       `json:"issues"`
+	// Priority marks this order for preferred (deliver-first) handling: the
+	// assign/sequence step pins priority stops to the front of their truck's
+	// route, then optimizes the rest around them (dealer override T2-1).
+	Priority bool     `json:"priority"`
+	Issues   []string `json:"issues"`
 }
 
-// Stop is one sequenced delivery stop on a truck.
+// Stop is one sequenced delivery stop on a truck. Priority mirrors the order's
+// deliver-first flag so the UI can render it without a separate lookup.
 type Stop struct {
 	OrderID      string  `json:"order_id"`
 	Sequence     int     `json:"sequence"`
@@ -81,6 +86,7 @@ type Stop struct {
 	Address      string  `json:"address,omitempty"`
 	CustomerName string  `json:"customer_name,omitempty"`
 	WeightLbs    float64 `json:"weight_lbs"`
+	Priority     bool    `json:"priority"`
 }
 
 // BedDims is the truck bed envelope from the fleet profile (for the 3D view).
@@ -150,4 +156,20 @@ type IngestRequest struct {
 // ResequenceRequest manually reorders one truck's stops (triggers a re-pack).
 type ResequenceRequest struct {
 	OrderIDs []string `json:"order_ids"`
+}
+
+// PriorityRequest toggles an order's deliver-first flag (dealer override T2-1),
+// re-sequencing (and re-packing) the affected truck.
+type PriorityRequest struct {
+	Priority bool `json:"priority"`
+}
+
+// Briefing is the LLM-generated dispatch briefing for a plan. When AI is not
+// configured Available is false and Message explains how to enable it; the core
+// workflow is never blocked on it.
+type Briefing struct {
+	Available bool   `json:"available"`
+	Model     string `json:"model,omitempty"`
+	Text      string `json:"text,omitempty"`
+	Message   string `json:"message,omitempty"`
 }

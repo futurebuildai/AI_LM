@@ -277,6 +277,7 @@ export interface OrderAnalysis {
   piece_count: number;
   shape_profile: 'LONG_LOAD' | 'COMPACT' | 'MIXED';
   routable: boolean;
+  priority: boolean;
   issues: string[];
 }
 
@@ -288,6 +289,16 @@ export interface WorkflowStop {
   address?: string;
   customer_name?: string;
   weight_lbs: number;
+  priority: boolean;
+}
+
+// AI dispatch briefing (LLM-generated). When AI is unconfigured `available` is
+// false and `message` explains how to enable it.
+export interface Briefing {
+  available: boolean;
+  model?: string;
+  text?: string;
+  message?: string;
 }
 
 export interface ComplianceAction {
@@ -442,10 +453,19 @@ class AiLmService {
       body: JSON.stringify({ order_ids: orderIds }),
     }).then((r) => jsonOrThrow(r));
   }
+  setStopPriority(id: string, orderId: string, priority: boolean): Promise<WorkflowPlan> {
+    return fetchWithAuth(`${BASE}/workflow/plans/${id}/stops/${orderId}/priority`, {
+      method: 'PUT',
+      body: JSON.stringify({ priority }),
+    }).then((r) => jsonOrThrow(r));
+  }
   reviewWorkflow(id: string): Promise<WorkflowPlan> {
     return fetchWithAuth(`${BASE}/workflow/plans/${id}/review`, { method: 'POST' }).then((r) =>
       jsonOrThrow(r),
     );
+  }
+  getBriefing(id: string): Promise<Briefing> {
+    return fetchWithAuth(`${BASE}/workflow/plans/${id}/briefing`).then((r) => jsonOrThrow(r));
   }
   pushWorkflow(id: string): Promise<WorkflowPlan> {
     return fetchWithAuth(`${BASE}/workflow/plans/${id}/push`, { method: 'POST' }).then((r) =>

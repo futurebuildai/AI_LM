@@ -35,8 +35,10 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux, roleGuard ...func(http.Hand
 	mux.HandleFunc("POST /api/v1/workflow/plans/{id}/assign", guard(h.HandleAssign))
 	mux.HandleFunc("POST /api/v1/workflow/plans/{id}/pack", guard(h.HandlePack))
 	mux.HandleFunc("PUT /api/v1/workflow/plans/{id}/loads/{vehicleId}/sequence", guard(h.HandleResequence))
+	mux.HandleFunc("PUT /api/v1/workflow/plans/{id}/stops/{orderId}/priority", guard(h.HandlePriority))
 	mux.HandleFunc("POST /api/v1/workflow/plans/{id}/review", guard(h.HandleReview))
 	mux.HandleFunc("POST /api/v1/workflow/plans/{id}/push", guard(h.HandlePush))
+	mux.HandleFunc("GET /api/v1/workflow/plans/{id}/briefing", guard(h.HandleBriefing))
 }
 
 func (h *Handler) HandleIngest(w http.ResponseWriter, r *http.Request) {
@@ -130,4 +132,39 @@ func (h *Handler) HandleResequence(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httputil.RespondJSON(w, http.StatusOK, plan)
+}
+
+// HandlePriority toggles an order's deliver-first flag (T2-1) and re-sequences
+// the affected truck, pinning priority stops to the front of the route.
+func (h *Handler) HandlePriority(w http.ResponseWriter, r *http.Request) {
+	var req PriorityRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		httputil.RespondError(w, r, "invalid request body", http.StatusBadRequest, err)
+		return
+	}
+	plan, err := h.svc.SetPriority(r.Context(), r.PathValue("id"), r.PathValue("orderId"), req.Priority)
+	if errors.Is(err, ErrNotFound) {
+		httputil.RespondError(w, r, "plan not found", http.StatusNotFound, err)
+		return
+	}
+	if err != nil {
+		httputil.RespondError(w, r, "set priority failed", http.StatusUnprocessableEntity, err)
+		return
+	}
+	httputil.RespondJSON(w, http.StatusOK, plan)
+}
+
+// HandleBriefing returns the LLM dispatch briefing for a plan. It always responds
+// 200: when AI is unconfigured the payload reports availability=false with a hint.
+func (h *Handler) HandleBriefing(w http.ResponseWriter, r *http.Request) {
+	briefing, err := h.svc.Briefing(r.Context(), r.PathValue("id"))
+	if errors.Is(err, ErrNotFound) {
+		httputil.RespondError(w, r, "plan not found", http.StatusNotFound, err)
+		return
+	}
+	if err != nil {
+		httputil.RespondError(w, r, "briefing failed", http.StatusInternalServerError, err)
+		return
+	}
+	httputil.RespondJSON(w, http.StatusOK, briefing)
 }

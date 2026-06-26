@@ -104,7 +104,7 @@ func (s *Service) Plan(ctx context.Context, req PlanRequest) (*Plan, error) {
 	flattened := []Stop{}
 	var totalDistance, totalDuration float64
 	for i := range loads {
-		ordered, distance, duration := optimizeSequence(depotLat, depotLng, loads[i].Stops)
+		ordered, distance, duration := active.Sequence(ctx, depotLat, depotLng, loads[i].Stops)
 		if ordered == nil {
 			ordered = []Stop{}
 		}

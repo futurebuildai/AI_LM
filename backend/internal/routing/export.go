@@ -1,6 +1,10 @@
 package routing
 
-import "github.com/futurebuildai/ai-lm/internal/gable"
+import (
+	"context"
+
+	"github.com/futurebuildai/ai-lm/internal/gable"
+)
 
 // Exported seams for the workflow orchestrator. The workflow module reuses the
 // routing heuristics (CVRP assignment + sequencing) without going through the
@@ -17,10 +21,13 @@ func AssignDrivers(drivers []gable.Driver, loads []Load) {
 	assignDrivers(drivers, loads)
 }
 
-// OptimizeSequence orders stops from the depot (nearest-neighbor + 2-opt) and
-// returns the sequenced stops with total distance (mi) and duration (min).
+// OptimizeSequence orders stops from the depot and returns the sequenced stops
+// with total distance (mi) and duration (min). It delegates to the active
+// SequenceOptimizer (haversine by default; ORS road-matrix when configured), so
+// existing callers pick up real OSS routing without changing. Callers without a
+// context use a background one; the ORS provider carries its own HTTP timeout.
 func OptimizeSequence(depotLat, depotLng float64, stops []Stop) ([]Stop, float64, float64) {
-	return optimizeSequence(depotLat, depotLng, stops)
+	return active.Sequence(context.Background(), depotLat, depotLng, stops)
 }
 
 // HaversineMiles is the great-circle distance between two coordinates.

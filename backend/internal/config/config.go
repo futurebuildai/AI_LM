@@ -33,6 +33,21 @@ type Config struct {
 	GableAPIURL         string // e.g. http://localhost:8080
 	GableIntegrationKey string // sent as X-Integration-Key
 
+	// OpenRouteService (pillar 6: real OSS routing). When ORSAPIKey is set the
+	// routing optimizer uses ORS's real road distance/duration matrix
+	// (driving-hgv) instead of the haversine heuristic. Empty key ⇒ haversine
+	// fallback (the service still runs, never hard-fails).
+	ORSAPIKey  string // ORS_API_KEY
+	ORSBaseURL string // ORS_BASE_URL (default https://api.openrouteservice.org)
+	ORSProfile string // ORS_PROFILE (default driving-hgv — heavy lumber trucks)
+
+	// OpenRouter LLM (pillar 6: single-key OSS inference). An OpenAI-compatible
+	// chat client pointed at OpenRouter, defaulting to an open-weight model.
+	// Empty key ⇒ AI features report "not configured" and degrade gracefully.
+	OpenRouterAPIKey  string // OPENROUTER_API_KEY
+	OpenRouterBaseURL string // OPENROUTER_BASE_URL (default https://openrouter.ai/api/v1)
+	OpenRouterModel   string // OPENROUTER_MODEL (default an open-weight model id)
+
 	// Logging
 	LogLevel string // DEBUG, INFO, WARN, ERROR (default: INFO)
 
@@ -56,6 +71,14 @@ func Load() (*Config, error) {
 
 		GableAPIURL:         getEnv("GABLE_API_URL", "http://localhost:8080"),
 		GableIntegrationKey: getEnv("GABLE_INTEGRATION_KEY", ""),
+
+		ORSAPIKey:  getEnv("ORS_API_KEY", ""),
+		ORSBaseURL: getEnv("ORS_BASE_URL", "https://api.openrouteservice.org"),
+		ORSProfile: getEnv("ORS_PROFILE", "driving-hgv"),
+
+		OpenRouterAPIKey:  getEnv("OPENROUTER_API_KEY", ""),
+		OpenRouterBaseURL: getEnv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"),
+		OpenRouterModel:   getEnv("OPENROUTER_MODEL", "meta-llama/llama-3.3-70b-instruct"),
 
 		LogLevel: getEnv("LOG_LEVEL", "INFO"),
 

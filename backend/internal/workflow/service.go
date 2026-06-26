@@ -51,6 +51,15 @@ type routeChecker interface {
 	CheckRoute(ctx context.Context, req compliance.RouteCheckRequest) (*compliance.RouteCheckResult, error)
 }
 
+// aiBriefer generates the natural-language dispatch briefing (satisfied by
+// *ai.Client). It is optional: when unconfigured the briefing endpoint reports
+// "unavailable" and the core workflow is unaffected.
+type aiBriefer interface {
+	Configured() bool
+	Model() string
+	Generate(ctx context.Context, systemPrompt, userPrompt string, maxTokens int) (string, error)
+}
+
 // Service orchestrates the five-step dispatch workflow.
 type Service struct {
 	repo    *Repository
@@ -58,10 +67,11 @@ type Service struct {
 	catalog catalogSource
 	fleet   fleetProfiles
 	checker routeChecker
+	ai      aiBriefer
 }
 
-func NewService(repo *Repository, g gableSource, c catalogSource, f fleetProfiles, rc routeChecker) *Service {
-	return &Service{repo: repo, gable: g, catalog: c, fleet: f, checker: rc}
+func NewService(repo *Repository, g gableSource, c catalogSource, f fleetProfiles, rc routeChecker, briefer aiBriefer) *Service {
+	return &Service{repo: repo, gable: g, catalog: c, fleet: f, checker: rc, ai: briefer}
 }
 
 // Get returns a plan by id.
@@ -237,9 +247,10 @@ func (s *Service) Assign(ctx context.Context, id string) (*Plan, error) {
 	rloads, unassigned := sweepAssign(vehicles, rstops, p.DepotLat, p.DepotLng)
 	routing.AssignDrivers(drivers, rloads)
 
+	priSet := prioritySet(p)
 	p.Loads = make([]TruckLoad, 0, len(rloads))
 	for _, rl := range rloads {
-		ordered, dist, dur := routing.OptimizeSequence(p.DepotLat, p.DepotLng, rl.Stops)
+		ordered, dist, dur := sequenceWithPriority(p.DepotLat, p.DepotLng, rl.Stops, priSet)
 		tl := TruckLoad{
 			VehicleID:         rl.VehicleID,
 			VehicleName:       rl.VehicleName,
@@ -532,8 +543,137 @@ func toWorkflowStop(st routing.Stop, byOrder map[string]*OrderAnalysis) Stop {
 	}
 	if a, ok := byOrder[st.OrderID]; ok {
 		out.CustomerName = a.CustomerName
+		out.Priority = a.Priority
 	}
 	return out
+}
+
+// prioritySet returns the set of order IDs marked deliver-first (T2-1).
+func prioritySet(p *Plan) map[string]bool {
+	m := make(map[string]bool)
+	for _, a := range p.Orders {
+		if a.Priority {
+			m[a.OrderID] = true
+		}
+	}
+	return m
+}
+
+// sequenceWithPriority pins priority stops to the front of the route, then
+// optimizes the rest around them. With no priority stops it is exactly the
+// normal depot-rooted optimization. Priority stops are themselves optimized
+// (from the depot); the remaining stops are then optimized starting from the
+// last priority stop so the hand-off leg is realistic. Sequence numbers are
+// renumbered 1..n across the combined route and the totals are summed.
+func sequenceWithPriority(depotLat, depotLng float64, rstops []routing.Stop, isPriority map[string]bool) ([]routing.Stop, float64, float64) {
+	if len(rstops) == 0 {
+		return []routing.Stop{}, 0, 0
+	}
+	var pri, rest []routing.Stop
+	for _, s := range rstops {
+		if isPriority[s.OrderID] {
+			pri = append(pri, s)
+		} else {
+			rest = append(rest, s)
+		}
+	}
+	if len(pri) == 0 {
+		return routing.OptimizeSequence(depotLat, depotLng, rest)
+	}
+
+	seqPri, d1, t1 := routing.OptimizeSequence(depotLat, depotLng, pri)
+	startLat, startLng := depotLat, depotLng
+	if len(seqPri) > 0 {
+		last := seqPri[len(seqPri)-1]
+		startLat, startLng = last.Lat, last.Lng
+	}
+	seqRest, d2, t2 := routing.OptimizeSequence(startLat, startLng, rest)
+
+	combined := make([]routing.Stop, 0, len(seqPri)+len(seqRest))
+	combined = append(combined, seqPri...)
+	combined = append(combined, seqRest...)
+	for i := range combined {
+		combined[i].Sequence = i + 1
+	}
+	return combined, round2(d1 + d2), round2(t1 + t2)
+}
+
+// SetPriority toggles an order's deliver-first flag (dealer override T2-1) and
+// re-sequences (and re-packs) the truck carrying it, pinning priority stops to
+// the front of the route. It is safe to call at any stage; later-stage
+// artifacts (review/push) are invalidated so the dispatcher re-runs them.
+func (s *Service) SetPriority(ctx context.Context, id, orderID string, priority bool) (*Plan, error) {
+	p, err := s.repo.Get(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+
+	found := false
+	for i := range p.Orders {
+		if p.Orders[i].OrderID == orderID {
+			if priority && !p.Orders[i].Routable {
+				return nil, fmt.Errorf("order %s has no geolocation and cannot be prioritized", orderID)
+			}
+			p.Orders[i].Priority = priority
+			found = true
+			break
+		}
+	}
+	if !found {
+		return nil, fmt.Errorf("order %s is not part of this plan", orderID)
+	}
+
+	// Reflect the flag onto any materialized stop (assigned or unassigned).
+	for i := range p.Loads {
+		for j := range p.Loads[i].Stops {
+			if p.Loads[i].Stops[j].OrderID == orderID {
+				p.Loads[i].Stops[j].Priority = priority
+			}
+		}
+	}
+	for i := range p.UnassignedOrders {
+		if p.UnassignedOrders[i].OrderID == orderID {
+			p.UnassignedOrders[i].Priority = priority
+		}
+	}
+
+	// Re-sequence (and re-pack) the truck carrying this order.
+	var target *TruckLoad
+	for i := range p.Loads {
+		for _, st := range p.Loads[i].Stops {
+			if st.OrderID == orderID {
+				target = &p.Loads[i]
+				break
+			}
+		}
+		if target != nil {
+			break
+		}
+	}
+	if target != nil {
+		resequenceOptimal(p, target)
+		if target.LoadPlan != nil {
+			vehicles, err := s.gable.ListVehicles(ctx)
+			if err != nil {
+				return nil, fmt.Errorf("fetch vehicles: %w", err)
+			}
+			vehiclesByID := make(map[string]gable.Vehicle, len(vehicles))
+			for _, v := range vehicles {
+				vehiclesByID[v.ID] = v
+			}
+			if err := s.packLoad(ctx, p, target, vehiclesByID, 0); err != nil {
+				return nil, err
+			}
+		}
+		if p.Status == StatusReviewed || p.Status == StatusPushed {
+			p.Status = StatusPacked
+		}
+	}
+
+	if err := s.repo.Update(ctx, p); err != nil {
+		return nil, err
+	}
+	return p, nil
 }
 
 // routeTotals computes path distance/duration for a fixed stop order.

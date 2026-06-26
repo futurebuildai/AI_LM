@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/futurebuildai/ai-lm/internal/ai"
 	"github.com/futurebuildai/ai-lm/internal/auth"
 	"github.com/futurebuildai/ai-lm/internal/catalog"
 	"github.com/futurebuildai/ai-lm/internal/compliance"
@@ -106,6 +107,28 @@ func main() {
 	gableClient := gable.NewClient(cfg.GableAPIURL, cfg.GableIntegrationKey)
 	logger.Info("GableLBM integration client initialized", "base_url", cfg.GableAPIURL)
 
+	// 5a. Pillar 6 — OSS inference.
+	// Real OSS routing: install the OpenRouteService-backed optimizer behind the
+	// routing seam. With no ORS_API_KEY the provider transparently falls back to
+	// the haversine heuristic, so the service runs unchanged.
+	orsProvider := routing.NewORSProvider(cfg.ORSAPIKey, cfg.ORSBaseURL, cfg.ORSProfile)
+	routing.SetOptimizer(orsProvider)
+	if orsProvider.Configured() {
+		logger.Info("OpenRouteService routing enabled", "profile", cfg.ORSProfile, "base_url", cfg.ORSBaseURL)
+	} else {
+		logger.Warn("ORS_API_KEY not set — routing uses the haversine heuristic (set ORS_API_KEY for real road-matrix routing)")
+	}
+
+	// Single-key OpenRouter LLM client (open-weight default model). Always
+	// constructed; reports "not configured" when OPENROUTER_API_KEY is unset so
+	// the AI dispatch briefing degrades gracefully.
+	aiClient := ai.NewClient(cfg.OpenRouterAPIKey, cfg.OpenRouterBaseURL, cfg.OpenRouterModel)
+	if aiClient.Configured() {
+		logger.Info("OpenRouter LLM client enabled", "model", aiClient.Model())
+	} else {
+		logger.Warn("OPENROUTER_API_KEY not set — AI dispatch briefings unavailable (set OPENROUTER_API_KEY to enable)")
+	}
+
 	// 6. Router & modules.
 	mux := http.NewServeMux()
 
@@ -137,7 +160,7 @@ func main() {
 	compliance.NewHandler(complianceSvc).RegisterRoutes(mux, writeGuard)
 
 	// Guided end-to-end workflow: ingest → analyze → assign → pack → review → push.
-	workflowSvc := workflow.NewService(workflow.NewRepository(db), gableClient, catalogSvc, fleetSvc, complianceSvc)
+	workflowSvc := workflow.NewService(workflow.NewRepository(db), gableClient, catalogSvc, fleetSvc, complianceSvc, aiClient)
 	workflow.NewHandler(workflowSvc).RegisterRoutes(mux, writeGuard)
 
 	// Health — liveness.

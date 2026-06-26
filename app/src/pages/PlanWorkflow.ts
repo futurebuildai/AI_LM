@@ -17,6 +17,8 @@ import {
   RotateCcw,
   ArrowRight,
   Link2,
+  Star,
+  RefreshCw,
 } from 'lucide';
 import {
   aiLmService,
@@ -24,6 +26,7 @@ import {
   type WorkflowStatus,
   type TruckLoad,
   type OrderAnalysis,
+  type Briefing,
 } from '../services/aiLmService.ts';
 import '../components/load/Load3DVisualizer.ts';
 import '../components/routing/RouteMap.ts';
@@ -73,6 +76,11 @@ export class PlanWorkflow extends LitElement {
   @state() private _stepSlider = -1;
   @state() private _playing = false;
   private _playTimer = 0;
+
+  // AI dispatch briefing (pillar 6) — collapsible, fetched on demand.
+  @state() private _briefing: Briefing | null = null;
+  @state() private _briefingOpen = false;
+  @state() private _briefingBusy = false;
 
   connectedCallback() {
     super.connectedCallback();
@@ -124,6 +132,8 @@ export class PlanWorkflow extends LitElement {
     if (this._activeTruck >= p.loads.length) this._activeTruck = 0;
     this._stepSlider = -1;
     this._stopPlayback();
+    // The plan changed — the prior briefing is stale; let the user regenerate.
+    this._briefing = null;
   }
 
   // --- actions ---------------------------------------------------------------
@@ -162,6 +172,41 @@ export class PlanWorkflow extends LitElement {
       () => aiLmService.resequenceWorkflow(this._plan!.id, truck.vehicle_id, ids),
       (p) => this._setPlan(p, this._step),
     );
+  }
+
+  // Toggle a stop's priority (deliver-first). The backend re-sequences the
+  // truck, pinning priority stops to the front of the route.
+  private _togglePriority(orderId: string, next: boolean) {
+    if (!this._plan) return;
+    this._run(
+      `prio:${orderId}`,
+      () => aiLmService.setStopPriority(this._plan!.id, orderId, next),
+      (p) => this._setPlan(p, this._step),
+    );
+  }
+
+  // --- AI dispatch briefing (pillar 6) ---------------------------------------
+
+  private _toggleBriefing() {
+    this._briefingOpen = !this._briefingOpen;
+    if (this._briefingOpen && !this._briefing && !this._briefingBusy) {
+      this._loadBriefing();
+    }
+  }
+
+  private async _loadBriefing() {
+    if (!this._plan) return;
+    this._briefingBusy = true;
+    try {
+      this._briefing = await aiLmService.getBriefing(this._plan.id);
+    } catch (err) {
+      this._briefing = {
+        available: false,
+        message: err instanceof Error ? err.message : String(err),
+      };
+    } finally {
+      this._briefingBusy = false;
+    }
   }
 
   // --- packing playback -------------------------------------------------------
@@ -221,6 +266,8 @@ export class PlanWorkflow extends LitElement {
 
         ${this._renderStepper()}
 
+        ${this._plan && this._plan.loads.length > 0 ? this._renderBriefing() : nothing}
+
         ${this._error
           ? html`<div class="px-4 py-2.5 rounded-lg border border-safety-red/30 bg-safety-red/10 text-safety-red text-sm">${this._error}</div>`
           : nothing}
@@ -263,6 +310,54 @@ export class PlanWorkflow extends LitElement {
             </button>
           `;
         })}
+      </div>
+    `;
+  }
+
+  // --- AI dispatch briefing panel (collapsible) ------------------------------
+
+  private _renderBriefing() {
+    const b = this._briefing;
+    return html`
+      <div class="glass-card rounded-xl border border-blueprint-blue/20">
+        <button
+          @click=${this._toggleBriefing}
+          class="w-full flex items-center gap-2 px-4 py-3 text-left"
+        >
+          ${icon(Sparkles, 18, 'text-blueprint-blue')}
+          <span class="text-sm font-semibold text-zinc-200">AI dispatch briefing</span>
+          ${b?.model
+            ? html`<span class="font-mono text-[10px] text-zinc-500 px-1.5 py-0.5 rounded border border-white/10">${b.model}</span>`
+            : nothing}
+          <span class="ml-auto text-zinc-500">${icon(this._briefingOpen ? ChevronUp : ChevronDown, 16)}</span>
+        </button>
+        ${this._briefingOpen
+          ? html`<div class="px-4 pb-4 -mt-1">
+              ${this._briefingBusy
+                ? html`<p class="text-sm text-zinc-400 flex items-center gap-2">
+                    ${icon(Sparkles, 14, 'text-blueprint-blue animate-pulse')} Generating briefing…
+                  </p>`
+                : b
+                  ? b.available
+                    ? html`<div class="text-sm text-zinc-300 whitespace-pre-wrap leading-relaxed">${b.text}</div>
+                        <button
+                          @click=${this._loadBriefing}
+                          class="mt-3 flex items-center gap-1.5 text-xs text-blueprint-blue hover:text-blueprint-blue/80"
+                        >
+                          ${icon(RefreshCw, 13)} Regenerate
+                        </button>`
+                    : html`<div class="flex items-start gap-2 text-sm text-amber-warn">
+                        ${icon(AlertTriangle, 16, 'shrink-0 mt-0.5')}
+                        <span>${b.message || 'AI briefing unavailable.'}</span>
+                      </div>`
+                  : html`<button
+                      @click=${this._loadBriefing}
+                      class="flex items-center gap-1.5 text-sm text-blueprint-blue hover:text-blueprint-blue/80"
+                    >
+                      ${icon(Sparkles, 14)} Generate briefing
+                    </button>`}
+            </div>`
+          : nothing}
       </div>
     `;
   }
@@ -595,15 +690,23 @@ export class PlanWorkflow extends LitElement {
       <div class="glass-card rounded-xl p-4">
         <h2 class="text-sm font-semibold text-zinc-300 mb-1">Route &amp; Pack Order</h2>
         <p class="text-xs text-zinc-500 mb-3">
-          Stop 1 delivers first → packed last (rear of bed). Reorder to re-pack.
+          Stop 1 delivers first → packed last (rear of bed). Reorder, or ★ a stop to deliver it first.
         </p>
         <ol class="space-y-1.5">
           ${t.stops.map((s, i) => {
             const color = STOP_HEX[(s.sequence - 1) % STOP_HEX.length];
+            const prioBusy = this._busy === `prio:${s.order_id}`;
             return html`
               <li class="flex items-center gap-2 text-sm">
                 <span class="h-6 w-6 shrink-0 rounded-full font-mono text-xs flex items-center justify-center text-deep-space" style="background:${color}">${s.sequence}</span>
-                <span class="flex-1 truncate text-zinc-300">${s.customer_name || s.address || s.order_id}</span>
+                <button
+                  @click=${() => this._togglePriority(s.order_id, !s.priority)}
+                  ?disabled=${this._busy !== ''}
+                  class="shrink-0 ${s.priority ? 'text-amber-warn' : 'text-zinc-600 hover:text-amber-warn'} disabled:opacity-40 ${prioBusy ? 'animate-pulse' : ''}"
+                  title=${s.priority ? 'Priority — delivered first. Click to clear.' : 'Mark priority (deliver first)'}
+                  aria-label="Toggle priority delivery"
+                >${icon(Star, 15, s.priority ? 'fill-amber-warn' : '')}</button>
+                <span class="flex-1 truncate ${s.priority ? 'text-amber-warn font-medium' : 'text-zinc-300'}">${s.customer_name || s.address || s.order_id}</span>
                 <span class="font-mono text-xs text-zinc-500">${s.weight_lbs.toLocaleString()} lb</span>
                 <span class="flex flex-col">
                   <button

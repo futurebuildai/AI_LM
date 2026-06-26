@@ -442,7 +442,8 @@ func computeDetour(pt compliance.RestrictedPoint, p *Plan, l *TruckLoad) (detour
 	}, true
 }
 
-// resequenceOptimal re-runs the route optimizer over a load's current stops.
+// resequenceOptimal re-runs the route optimizer over a load's current stops,
+// keeping any priority (deliver-first) stops pinned to the front (T2-1).
 func resequenceOptimal(p *Plan, l *TruckLoad) {
 	rstops := make([]routing.Stop, 0, len(l.Stops))
 	for _, st := range l.Stops {
@@ -454,7 +455,7 @@ func resequenceOptimal(p *Plan, l *TruckLoad) {
 			WeightLbs: st.WeightLbs,
 		})
 	}
-	ordered, dist, dur := routing.OptimizeSequence(p.DepotLat, p.DepotLng, rstops)
+	ordered, dist, dur := sequenceWithPriority(p.DepotLat, p.DepotLng, rstops, prioritySet(p))
 	byOrder := orderIndex(p)
 	l.Stops = make([]Stop, 0, len(ordered))
 	for _, st := range ordered {
